@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { usePrivy, useWallets } from '@privy-io/react-auth';
 import WorldScene from './components/World/WorldScene';
 import Overlay from './components/UI/Overlay';
+import AgentDMPanel from './components/UI/AgentDMPanel';
 import SpectatorHUD from './components/UI/SpectatorHUD';
 import WalletModal, { type ERC8004FormData } from './components/UI/WalletModal';
 import { Agent, WorldState, Vector3 } from './types';
@@ -11,6 +12,8 @@ import { useWorldStore } from './store';
 import { fetchWalletBalance } from './utils/balance';
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
+const FRONTEND_MAINTENANCE_MODE = true;
+const FRONTEND_MAINTENANCE_MESSAGE = 'opgrid is under maintainence.';
 
 const App: React.FC = () => {
   // Use granular Zustand selectors to avoid re-renders from unrelated state changes
@@ -35,6 +38,7 @@ const App: React.FC = () => {
   const setHasEntered = useWorldStore((s) => s.setHasEntered);
   const setPlayerId = useWorldStore((s) => s.setPlayerId);
   const setWalletAddress = useWorldStore((s) => s.setWalletAddress);
+  const setOwnership = useWorldStore((s) => s.setOwnership);
   const setFollowAgentId = useWorldStore((s) => s.setFollowAgentId);
   const setLastFollowAgentId = useWorldStore((s) => s.setLastFollowAgentId);
   const reset = useWorldStore((s) => s.reset);
@@ -146,6 +150,8 @@ const App: React.FC = () => {
 
   // Auto-connect socket as spectator on mount (no auth required to watch)
   useEffect(() => {
+    if (FRONTEND_MAINTENANCE_MODE) return;
+
     socketService.connectSpectator().catch((err) => {
       console.warn('[App] Spectator connection failed:', err.message);
     });
@@ -277,6 +283,7 @@ const App: React.FC = () => {
 
       // Step 3: Update local state
       setPlayerId(agentId);
+      setOwnership(true, agentId);
       setHasEntered(true);
       setShowAccessModal(false);
       setConnectionState('connected');
@@ -351,6 +358,25 @@ const App: React.FC = () => {
     addMessage({ sender: 'You', content: action, timestamp: Date.now() });
     socketService.sendChat(playerId, action);
   }, [playerId, addMessage]);
+
+  if (FRONTEND_MAINTENANCE_MODE) {
+    return (
+      <div className={`w-screen h-screen overflow-hidden relative transition-colors duration-1000 ${isDarkMode ? 'dark' : ''}`}>
+        <div className={`fixed inset-0 z-[200] flex items-center justify-center ${isDarkMode ? 'bg-[#070B18]' : 'bg-white'}`}>
+          <div className={`w-full max-w-md mx-6 rounded-3xl border backdrop-blur-xl p-8 shadow-2xl ${
+            isDarkMode
+              ? 'bg-slate-950/90 border-white/10 text-white'
+              : 'bg-white/95 border-gray-200/70 text-gray-900'
+          }`}>
+            <h1 className="text-lg font-bold tracking-tight">OpGrid</h1>
+            <p className={`mt-2 text-sm ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+              {FRONTEND_MAINTENANCE_MESSAGE}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`w-screen h-screen overflow-hidden relative transition-colors duration-1000 ${isDarkMode ? 'dark' : ''}`}>
@@ -460,6 +486,8 @@ const App: React.FC = () => {
           followedAgentId={followAgentId}
         />
       )}
+
+      {hasEntered && <AgentDMPanel isDarkMode={isDarkMode} />}
 
       {/* Simulation Indicator */}
       {isSimulating && (
