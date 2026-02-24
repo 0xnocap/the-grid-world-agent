@@ -1,5 +1,6 @@
 import { Server as SocketServer } from 'socket.io';
 import type { AgentInputEvent } from './types.js';
+import { CLASS_BONUSES } from './types.js';
 import { getWorldManager } from './world.js';
 import * as db from './db.js';
 import { verifyToken } from './auth.js';
@@ -11,6 +12,14 @@ const SOCKET_CHAT_RATE_LIMIT = { limit: 5, windowMs: 20_000 };
 const SOCKET_MOVE_RATE_LIMIT = { limit: 20, windowMs: 10_000 };
 const SNAPSHOT_TERMINAL_MESSAGE_LIMIT = 30;
 const SNAPSHOT_CHAT_MESSAGE_LIMIT = 150;
+const BASE_MOVE_RANGE = 300;
+
+function getMoveRangeLimit(agentClass?: string): number {
+  if (agentClass === 'explorer') {
+    return Math.round(BASE_MOVE_RANGE * CLASS_BONUSES.explorer.moveRangeMultiplier);
+  }
+  return BASE_MOVE_RANGE;
+}
 
 function extractSocketToken(socket: any): string | null {
   const authToken = typeof socket.handshake?.auth?.token === 'string'
@@ -86,7 +95,11 @@ export function setupSocketServer(httpServer: any): SocketServer {
           bio: a.bio,
           erc8004AgentId: ext.erc8004AgentId,
           erc8004Registry: ext.erc8004Registry,
-          reputationScore: ext.reputationScore
+          reputationScore: ext.reputationScore,
+          localReputation: ext.localReputation,
+          combinedReputation: ext.combinedReputation,
+          agentClass: ext.agentClass,
+          materials: ext.materials,
         };
       });
 
@@ -162,6 +175,16 @@ export function setupSocketServer(httpServer: any): SocketServer {
           }
 
           if (to) {
+            const moverClass = (agent as any)?.agentClass as string | undefined;
+            const maxMoveRange = getMoveRangeLimit(moverClass);
+            const distance = Math.hypot(to.x - agent.position.x, to.z - agent.position.z);
+            if (distance > maxMoveRange) {
+              socket.emit('error', {
+                message: `Move target is too far (${distance.toFixed(1)} units). Max per move: ${maxMoveRange}.`,
+              });
+              return;
+            }
+
             world.queueAction(actingAgentId, {
               type: 'MOVE',
               targetPosition: { x: to.x, y: 0, z: to.z }

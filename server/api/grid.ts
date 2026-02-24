@@ -18,10 +18,15 @@ import {
   CreateGuildSchema,
   VoteDirectiveSchema,
   CompleteDirectiveSchema,
-  BUILD_CREDIT_CONFIG
+  TradeRequestSchema,
+  BUILD_CREDIT_CONFIG,
+  CLASS_BONUSES,
+  MATERIAL_CONFIG,
+  MATERIAL_TYPES
 } from '../types.js';
 import type { BlueprintBuildPlan } from '../types.js';
 import { EXEMPT_SHAPES, validateBuildPosition } from '../build-validation.js';
+import { getSkillsForClass, getSkillById } from '../data/skills.js';
 
 // --- Spatial Computation Helpers ---
 
@@ -112,6 +117,7 @@ const NODE_CATEGORY_BASE: Exclude<NodeCategory, 'mixed'>[] = [
   'nature',
 ];
 const NODE_EXPANSION_GATE = 25;
+const TIER3_NODE_TIERS = new Set<NodeTier>(['city-node', 'metropolis-node', 'megaopolis-node']);
 
 const DIRECTION_LABELS: Record<string, string> = {
   C: 'Central',
@@ -930,6 +936,68 @@ function roundBB(bb: BoundingBox): { minX: number; maxX: number; minY: number; m
   };
 }
 
+function emptyMaterialCounts(): Record<string, number> {
+  return MATERIAL_TYPES.reduce((acc, type) => {
+    acc[type] = 0;
+    return acc;
+  }, {} as Record<string, number>);
+}
+
+const ARCHITECT_EXCLUSIVE_NODE_TIERS = new Set<NodeTier>(['metropolis-node', 'megaopolis-node']);
+const ARCHITECT_EXCLUSIVE_MIN_PRIMITIVES = 40;
+const GRID_STATS_CELL_SIZE = 20;
+const GRID_STATS_TTL_MS = 30_000;
+
+function blueprintPrimitiveCount(blueprint: any): number {
+  if (typeof blueprint?.totalPrimitives === 'number' && Number.isFinite(blueprint.totalPrimitives)) {
+    return Math.max(0, Math.floor(blueprint.totalPrimitives));
+  }
+
+  if (!Array.isArray(blueprint?.phases)) return 0;
+  return blueprint.phases.reduce((sum: number, phase: any) => {
+    const count = Array.isArray(phase?.primitives) ? phase.primitives.length : 0;
+    return sum + count;
+  }, 0);
+}
+
+function isArchitectExclusiveBlueprint(blueprint: any): boolean {
+  if (!blueprint || typeof blueprint !== 'object') return false;
+
+  const tags = Array.isArray(blueprint.tags)
+    ? blueprint.tags.map((t: unknown) => String(t).toLowerCase())
+    : [];
+  if (tags.includes('architect-only') || tags.includes('mega') || tags.includes('large')) {
+    return true;
+  }
+
+  if (
+    typeof blueprint.minNodeTier === 'string' &&
+    ARCHITECT_EXCLUSIVE_NODE_TIERS.has(blueprint.minNodeTier as NodeTier)
+  ) {
+    return true;
+  }
+
+  return blueprintPrimitiveCount(blueprint) >= ARCHITECT_EXCLUSIVE_MIN_PRIMITIVES;
+}
+
+function annotateBlueprintClassGates(raw: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [name, blueprint] of Object.entries(raw || {})) {
+    if (isArchitectExclusiveBlueprint(blueprint)) {
+      out[name] = {
+        ...blueprint,
+        classGates: {
+          requiredClass: 'architect',
+          reason: 'Large-scale blueprint reserved for architect class',
+        },
+      };
+    } else {
+      out[name] = blueprint;
+    }
+  }
+  return out;
+}
+
 /** Find the XZ distance from a point to the nearest existing primitive in the world. */
 function distanceToNearestPrimitive(
   x: number, z: number, primitives: Array<{ position: { x: number; z: number } }>
@@ -992,6 +1060,18 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
   const PRIMITIVE_RATE_LIMIT = { limit: 12, windowMs: 10_000 };
   const BLUEPRINT_START_RATE_LIMIT = { limit: 2, windowMs: 20_000 };
   const BLUEPRINT_CONTINUE_RATE_LIMIT = { limit: 6, windowMs: 30_000 };
+  const DM_SEND_RATE_LIMIT = { limit: 10, windowMs: 60_000 };
+  const DM_INBOX_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
+  const DM_MARK_READ_RATE_LIMIT = { limit: 30, windowMs: 60_000 };
+
+  const SendDirectMessageSchema = z.object({
+    toAgentId: z.string().min(1),
+    message: z.string().min(1).max(500),
+  });
+
+  const MarkDirectMessagesReadSchema = z.object({
+    messageIds: z.array(z.number().int().positive()).max(50).default([]),
+  });
 
   // Helper: authenticate and verify agent exists in DB
   const requireAgent = async (request: FastifyRequest, reply: FastifyReply): Promise<string | null> => {
@@ -1135,7 +1215,8 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       rotation: body.rotation,
       scale: body.scale,
       color: body.color,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      materialType: body.materialType || null,
     };
 
     const placed = await db.createWorldPrimitiveWithCreditDebit(
@@ -1150,6 +1231,30 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     }
 
     world.addWorldPrimitive(primitive);
+
+    if (placed.repReward && placed.totalBuilt) {
+      const repTermMsg = {
+        id: 0,
+        agentId: 'system',
+        agentName: 'System',
+        message: `🏆 ${builderName} reached a milestone (${placed.totalBuilt} primitives built) and earned +${placed.repReward} reputation!`,
+        createdAt: Date.now()
+      };
+      await db.writeTerminalMessage(repTermMsg);
+      world.broadcastTerminalMessage(repTermMsg);
+    }
+
+    if (placed.materialEarned) {
+      const matTermMsg = {
+        id: 0,
+        agentId: 'system',
+        agentName: 'System',
+        message: `⛏️ ${builderName} earned 1 ${placed.materialEarned} material for placing ${MATERIAL_CONFIG.EARN_EVERY_N_PRIMITIVES} primitives.`,
+        createdAt: Date.now()
+      };
+      await db.writeTerminalMessage(matTermMsg);
+      world.broadcastTerminalMessage(matTermMsg);
+    }
 
     // Write build confirmation to terminal feed (not chat — chat is for agent conversations)
     const pos = body.position;
@@ -1224,6 +1329,17 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: `Blueprint '${body.name}' not found.` });
     }
 
+    const requester = await db.getAgent(agentId);
+    if (!requester) {
+      return reply.code(404).send({ error: 'Agent not found.' });
+    }
+    const requesterClass = ((requester as any)?.agentClass as string | undefined) || 'builder';
+    if (isArchitectExclusiveBlueprint(blueprint) && requesterClass !== 'architect') {
+      return reply.code(403).send({
+        error: `Blueprint '${body.name}' is architect-exclusive. Your class is '${requesterClass}'.`,
+      });
+    }
+
     // Keep blueprint starts local so agents do not create remote plans they
     // cannot continue immediately.
     const activeAgent = world.getAgent(agentId);
@@ -1238,17 +1354,6 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           distance: Math.round(distance),
           anchorX: body.anchorX,
           anchorZ: body.anchorZ,
-        });
-      }
-    }
-
-    // Reputation gate: advanced blueprints require reputation >= 5
-    if (blueprint.advanced) {
-      const agentData = await db.getAgent(agentId) as any;
-      const reputation = agentData?.reputationScore ?? 0;
-      if (reputation < 5) {
-        return reply.code(403).send({
-          error: `This blueprint requires reputation >= 5. Current: ${reputation}. Get positive feedback from other agents.`
         });
       }
     }
@@ -1268,6 +1373,19 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const isFoundingAnchor = !bestNode || bestDist > BUILD_CREDIT_CONFIG.ANCHOR_FOUNDING_RADIUS;
     const bpTags: string[] = Array.isArray(blueprint.tags) ? blueprint.tags.map((t: any) => String(t).toLowerCase()) : [];
     const isMegaBlueprint = bpTags.includes('mega');
+    const isTier3Blueprint =
+      (typeof blueprint.minNodeTier === 'string' && TIER3_NODE_TIERS.has(blueprint.minNodeTier as NodeTier)) ||
+      String(blueprint.difficulty || '').toLowerCase() === 'hard' ||
+      bpTags.includes('mega') ||
+      bpTags.includes('tier-3');
+    if (isTier3Blueprint) {
+      const combinedReputation = await db.getCombinedReputation(agentId);
+      if (combinedReputation < 15) {
+        return reply.code(403).send({
+          error: `Tier-3 blueprints require combined reputation >= 15. Current: ${combinedReputation}.`
+        });
+      }
+    }
 
     // Node-tier gate: blueprints with minNodeTier require a nearby node at that tier or higher
     if (blueprint.minNodeTier) {
@@ -1325,15 +1443,51 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Check agent has enough credits for total primitives
+    // Check resource costs for this blueprint
     const totalPrims = blueprint.totalPrimitives || blueprint.phases.reduce(
       (sum: number, phase: any) => sum + phase.primitives.length, 0
     );
-    const credits = await db.getAgentCredits(agentId);
-    if (credits < totalPrims * BUILD_CREDIT_CONFIG.PRIMITIVE_COST) {
-      return reply.code(403).send({
-        error: `Insufficient credits. Need ${totalPrims}, have ${credits}.`
-      });
+    const blueprintCreditCost = totalPrims * BUILD_CREDIT_CONFIG.PRIMITIVE_COST;
+    const blueprintMaterialCost: Record<string, number> | null =
+      blueprint.materialCost && typeof blueprint.materialCost === 'object'
+        ? blueprint.materialCost as Record<string, number>
+        : null;
+
+    let creditsPrepaid = false;
+    if (blueprintMaterialCost) {
+      const inventory = await db.getAgentMaterials(agentId);
+      const missing: string[] = [];
+      for (const [material, amount] of Object.entries(blueprintMaterialCost)) {
+        if (!amount || amount <= 0) continue;
+        if (!MATERIAL_TYPES.includes(material as any)) {
+          missing.push(`${material}: invalid material type`);
+          continue;
+        }
+        const matKey = material as keyof typeof inventory;
+        const current = inventory[matKey] ?? 0;
+        if (current < amount) {
+          missing.push(`${material}: need ${amount}, have ${current}`);
+        }
+      }
+      if (missing.length > 0) {
+        return reply.code(403).send({
+          error: `Insufficient materials for blueprint start: ${missing.join(', ')}`
+        });
+      }
+      const credits = await db.getAgentCredits(agentId);
+      if (credits < blueprintCreditCost) {
+        return reply.code(403).send({
+          error: `Insufficient credits. Need ${blueprintCreditCost}, have ${credits}.`
+        });
+      }
+      creditsPrepaid = true;
+    } else {
+      const credits = await db.getAgentCredits(agentId);
+      if (credits < blueprintCreditCost) {
+        return reply.code(403).send({
+          error: `Insufficient credits. Need ${blueprintCreditCost}, have ${credits}.`
+        });
+      }
     }
 
     // Compute absolute coordinates — the core value of the blueprint engine.
@@ -1381,6 +1535,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
             z: prim.scaleZ || 1,
           },
           color: prim.color || '#808080',
+          materialType: prim.materialType || null,
         });
       }
     }
@@ -1426,6 +1581,16 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Atomic debit for premium (material-cost) blueprints after all placement validations pass.
+    if (creditsPrepaid && blueprintMaterialCost) {
+      const started = await db.startBlueprintWithMaterialCost(agentId, blueprintCreditCost, blueprintMaterialCost);
+      if (!started) {
+        return reply.code(403).send({
+          error: 'Unable to start blueprint due to insufficient credits/materials.'
+        });
+      }
+    }
+
     // Store plan
     const plan: BlueprintBuildPlan = {
       agentId,
@@ -1438,6 +1603,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       placedCount: 0,
       nextIndex: 0,
       startedAt: Date.now(),
+      creditsPrepaid,
     };
     world.setBuildPlan(agentId, plan);
     world.setBlueprintReservation(agentId, { minX: footMinX, maxX: footMaxX, minZ: footMinZ, maxZ: footMaxZ });
@@ -1577,11 +1743,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           color: prim.color,
           createdAt: Date.now(),
           blueprintInstanceId: `bp_${agentId}_${plan.startedAt}`,
+          blueprintName: plan.blueprintName,
+          materialType: prim.materialType || null,
         };
 
         const placed = await db.createWorldPrimitiveWithCreditDebit(
           primitive,
-          BUILD_CREDIT_CONFIG.PRIMITIVE_COST
+          plan.creditsPrepaid ? 0 : BUILD_CREDIT_CONFIG.PRIMITIVE_COST
         );
         if (!placed.ok) {
           results.push({
@@ -1593,6 +1761,30 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
         }
 
         world.addWorldPrimitive(primitive);
+
+        if (placed.repReward && placed.totalBuilt) {
+          const repTermMsg = {
+            id: 0,
+            agentId: 'system',
+            agentName: 'System',
+            message: `🏆 ${builderName} reached a milestone (${placed.totalBuilt} primitives built) and earned +${placed.repReward} reputation!`,
+            createdAt: Date.now()
+          };
+          await db.writeTerminalMessage(repTermMsg);
+          world.broadcastTerminalMessage(repTermMsg);
+        }
+
+        if (placed.materialEarned) {
+          const matTermMsg = {
+            id: 0,
+            agentId: 'system',
+            agentName: 'System',
+            message: `⛏️ ${builderName} earned 1 ${placed.materialEarned} material for placing ${MATERIAL_CONFIG.EARN_EVERY_N_PRIMITIVES} primitives.`,
+            createdAt: Date.now()
+          };
+          await db.writeTerminalMessage(matTermMsg);
+          world.broadcastTerminalMessage(matTermMsg);
+        }
 
         plan.placedCount++;
         results.push({ index: idx, success: true });
@@ -1897,6 +2089,96 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     return await db.getTerminalMessages(50);
   });
 
+  // --- Human-Agent DMs (REST polling inbox) ---
+
+  fastify.post('/v1/grid/dm', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const dmThrottle = checkRateLimit(
+      'rest:grid:dm:send',
+      agentId,
+      DM_SEND_RATE_LIMIT.limit,
+      DM_SEND_RATE_LIMIT.windowMs
+    );
+    if (!dmThrottle.allowed) {
+      return reply.status(429).send({
+        error: 'DM rate limited. Slow down.',
+        retryAfterMs: dmThrottle.retryAfterMs,
+      });
+    }
+
+    const body = SendDirectMessageSchema.parse(request.body);
+    if (body.toAgentId === agentId) {
+      return reply.status(400).send({ error: 'Cannot DM yourself.' });
+    }
+
+    const sender = await db.getAgent(agentId);
+    const recipient = await db.getAgent(body.toAgentId);
+    if (!sender || !recipient) {
+      return reply.status(404).send({ error: 'Sender or recipient agent not found.' });
+    }
+
+    const fromType = (sender as any)?.isAutonomous ? 'agent' : 'human';
+    const fromId = fromType === 'human'
+      ? ((sender as any)?.ownerId || sender.id)
+      : sender.id;
+
+    const saved = await db.sendDirectMessage(fromId, fromType, body.toAgentId, body.message.trim());
+    return saved;
+  });
+
+  fastify.get('/v1/grid/dm/inbox', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const inboxThrottle = checkRateLimit(
+      'rest:grid:dm:inbox',
+      agentId,
+      DM_INBOX_RATE_LIMIT.limit,
+      DM_INBOX_RATE_LIMIT.windowMs
+    );
+    if (!inboxThrottle.allowed) {
+      return reply.status(429).send({
+        error: 'DM inbox polling is rate limited. Slow down.',
+        retryAfterMs: inboxThrottle.retryAfterMs,
+      });
+    }
+
+    const query = request.query as { unread?: string | boolean | number };
+    const unreadRaw = query?.unread;
+    const unreadOnly =
+      unreadRaw === true ||
+      unreadRaw === 1 ||
+      String(unreadRaw || '').toLowerCase() === 'true' ||
+      String(unreadRaw || '') === '1';
+
+    const messages = await db.getAgentInbox(agentId, unreadOnly);
+    return { messages };
+  });
+
+  fastify.post('/v1/grid/dm/mark-read', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const markReadThrottle = checkRateLimit(
+      'rest:grid:dm:mark-read',
+      agentId,
+      DM_MARK_READ_RATE_LIMIT.limit,
+      DM_MARK_READ_RATE_LIMIT.windowMs
+    );
+    if (!markReadThrottle.allowed) {
+      return reply.status(429).send({
+        error: 'DM mark-read is rate limited. Slow down.',
+        retryAfterMs: markReadThrottle.retryAfterMs,
+      });
+    }
+
+    const body = MarkDirectMessagesReadSchema.parse(request.body);
+    const updated = await db.markDMsRead(agentId, body.messageIds);
+    return { updated };
+  });
+
   // --- Directives ---
 
   fastify.get('/v1/grid/directives', async (request, reply) => {
@@ -1910,6 +2192,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const agent = await db.getAgent(agentId);
     if (!agent) {
       return reply.status(404).send({ error: 'Agent not found' });
+    }
+
+    const combinedReputation = await db.getCombinedReputation(agentId);
+    if (combinedReputation < 5) {
+      return reply.status(403).send({
+        error: `Combined reputation of 5 required to submit a directive. Current: ${combinedReputation}.`
+      });
     }
 
     const body = SubmitGridDirectiveSchema.parse(request.body);
@@ -1989,6 +2278,14 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const guildId = await db.getAgentGuild(agentId);
     if (!guildId) return reply.status(403).send({ error: 'Not in a guild' });
 
+    const agent = await db.getAgent(agentId);
+    const combinedReputation = await db.getCombinedReputation(agentId);
+    if (!agent || combinedReputation < 5) {
+      return reply.status(403).send({
+        error: `Combined reputation of 5 required to submit a guild directive. Current: ${combinedReputation}.`
+      });
+    }
+
     const body = SubmitGuildDirectiveSchema.parse(request.body);
     if (body.guildId !== guildId) return reply.status(403).send({ error: 'Wrong guild' });
 
@@ -2043,14 +2340,22 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     await db.castVote(id, agentId, body.vote);
 
-    // Write vote confirmation to terminal feed
+    // Diplomat class gets 2x vote weight — cast an extra synthetic vote
     const voter = await db.getAgent(agentId);
+    const voterClass = (voter as any)?.agentClass as string | undefined;
+    if (voterClass === 'diplomat') {
+      // Cast a second vote under a synthetic ID to represent double weight
+      await db.castVote(id, `${agentId}_diplomat_weight`, body.vote);
+    }
+
+    // Write vote confirmation to terminal feed
     const voterName = voter?.name || agentId;
+    const voteLabel = voterClass === 'diplomat' ? `${body.vote} (2x diplomat weight)` : body.vote;
     const termMsg = {
       id: 0,
       agentId: 'system',
       agentName: 'System',
-      message: `${voterName} voted ${body.vote} on directive ${id}`,
+      message: `${voterName} voted ${voteLabel} on directive ${id}`,
       createdAt: Date.now()
     };
     await db.writeTerminalMessage(termMsg);
@@ -2117,6 +2422,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     }
 
     await db.completeDirective(id, agentId);
+    await db.addLocalReputation(agentId, 5); // Feature 7b reward
 
     // No credit reward — building itself earns credits
     const completer = await db.getAgent(agentId);
@@ -2139,6 +2445,14 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
   fastify.post('/v1/grid/guilds', async (request, reply) => {
     const commanderId = await requireAgent(request, reply);
     if (!commanderId) return;
+
+    const commander = await db.getAgent(commanderId);
+    const combinedReputation = await db.getCombinedReputation(commanderId);
+    if (!commander || combinedReputation < 10) {
+      return reply.status(403).send({
+        error: `Combined reputation of 10 required to create a guild. Current: ${combinedReputation}.`
+      });
+    }
 
     const body = CreateGuildSchema.parse(request.body);
     
@@ -2217,6 +2531,123 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     return { credits };
   });
 
+  // --- Materials ---
+
+  fastify.get('/v1/grid/materials', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+    const materials = await db.getAgentMaterials(agentId);
+    return { materials };
+  });
+
+  fastify.post('/v1/grid/trade', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const body = TradeRequestSchema.parse(request.body);
+    if (body.toAgentId === agentId) {
+      return reply.status(400).send({ error: 'Cannot trade materials to yourself.' });
+    }
+
+    const sender = await db.getAgent(agentId);
+    const recipient = await db.getAgent(body.toAgentId);
+    if (!sender || !recipient) {
+      return reply.status(404).send({ error: 'Sender or recipient agent not found.' });
+    }
+
+    const senderClass = (sender as any)?.agentClass as string | undefined;
+    const transferMultiplier = senderClass === 'merchant' ? CLASS_BONUSES.merchant.transferBonus : 1;
+    const receivedAmount = Math.round(body.amount * transferMultiplier);
+
+    const transferred = await db.transferMaterial(agentId, body.toAgentId, body.material, body.amount);
+    if (!transferred) {
+      return reply.status(403).send({ error: 'Insufficient material balance for trade.' });
+    }
+
+    if (receivedAmount > body.amount) {
+      await db.addMaterial(body.toAgentId, body.material, receivedAmount - body.amount);
+    }
+
+    await db.incrementSuccessfulTrades(agentId);
+    await db.incrementSuccessfulTrades(body.toAgentId);
+    await db.addLocalReputation(agentId, 1);
+    await db.addLocalReputation(body.toAgentId, 1);
+
+    const senderName = sender.name || agentId;
+    const bonusLabel = receivedAmount > body.amount ? ` (+${receivedAmount - body.amount} merchant bonus)` : '';
+    const tradeTermMsg = {
+      id: 0,
+      agentId: 'system',
+      agentName: 'System',
+      message: `${senderName} traded ${body.amount} ${body.material} to ${recipient.name}${bonusLabel}`,
+      createdAt: Date.now()
+    };
+    await db.writeTerminalMessage(tradeTermMsg);
+    world.broadcastTerminalMessage(tradeTermMsg);
+
+    return {
+      success: true,
+      material: body.material,
+      transferred: body.amount,
+      received: receivedAmount,
+      to: body.toAgentId
+    };
+  });
+
+  fastify.post('/v1/grid/scavenge', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const scavengeThrottle = checkRateLimit('rest:grid:scavenge', agentId, 1, 60_000);
+    if (!scavengeThrottle.allowed) {
+      return reply.code(429).send({
+        error: 'Scavenge rate limited. Try again in a minute.',
+        retryAfterMs: scavengeThrottle.retryAfterMs,
+      });
+    }
+
+    const agent = await db.getAgent(agentId);
+    const agentClass = (agent as any)?.agentClass as string | undefined;
+    if (agentClass !== 'scavenger') {
+      return reply.status(403).send({ error: 'Only scavenger class agents can use scavenge.' });
+    }
+
+    const abandonedStructures = await db.getAbandonedStructureCount(7);
+    if (abandonedStructures <= 0) {
+      return {
+        success: true,
+        abandonedStructures: 0,
+        harvested: emptyMaterialCounts(),
+        totalHarvested: 0
+      };
+    }
+
+    const totalHarvested = Math.min(5, abandonedStructures * MATERIAL_CONFIG.SCAVENGE_YIELD);
+    const harvested = emptyMaterialCounts();
+    for (let i = 0; i < totalHarvested; i++) {
+      const found = await db.addRandomMaterial(agentId);
+      if (found) harvested[found] += 1;
+    }
+
+    const scavengerName = agent?.name || agentId;
+    const scavengeTermMsg = {
+      id: 0,
+      agentId: 'system',
+      agentName: 'System',
+      message: `🧲 ${scavengerName} scavenged ${totalHarvested} materials from ${abandonedStructures} abandoned structures.`,
+      createdAt: Date.now()
+    };
+    await db.writeTerminalMessage(scavengeTermMsg);
+    world.broadcastTerminalMessage(scavengeTermMsg);
+
+    return {
+      success: true,
+      abandonedStructures,
+      harvested,
+      totalHarvested
+    };
+  });
+
   // --- Credit Transfer ---
 
   const TransferCreditsSchema = z.object({
@@ -2247,22 +2678,155 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ error: `Insufficient credits. You have ${senderCredits}, tried to send ${body.amount}.` });
     }
 
+    // Merchant class gets 1.5x transfer bonus — recipient receives more
+    const sender = await db.getAgent(agentId);
+    const senderClass = (sender as any)?.agentClass as string | undefined;
+    const transferMultiplier = senderClass === 'merchant' ? CLASS_BONUSES.merchant.transferBonus : 1;
+    const receivedAmount = Math.round(body.amount * transferMultiplier);
+
+    // Deduct the base amount from sender, credit the (possibly boosted) amount to recipient
     await db.transferCredits(agentId, body.toAgentId, body.amount, BUILD_CREDIT_CONFIG.CREDIT_CAP);
+    // If merchant bonus, add the extra credits to recipient
+    if (receivedAmount > body.amount) {
+      const bonus = receivedAmount - body.amount;
+      await db.addCreditsWithCap(body.toAgentId, bonus, BUILD_CREDIT_CONFIG.CREDIT_CAP);
+    }
+    await db.incrementSuccessfulTrades(agentId);
+    await db.incrementSuccessfulTrades(body.toAgentId);
+    await db.addLocalReputation(agentId, 1);
+    await db.addLocalReputation(body.toAgentId, 1);
 
     // Broadcast transfer to terminal
-    const sender = await db.getAgent(agentId);
     const senderName = sender?.name || agentId;
+    const bonusLabel = receivedAmount > body.amount ? ` (+${receivedAmount - body.amount} merchant bonus)` : '';
     const transferTermMsg = {
       id: 0,
       agentId: 'system',
       agentName: 'System',
-      message: `${senderName} transferred ${body.amount} credits to ${recipient.name}`,
+      message: `${senderName} transferred ${body.amount} credits to ${recipient.name}${bonusLabel}`,
       createdAt: Date.now()
     };
     await db.writeTerminalMessage(transferTermMsg);
     world.broadcastTerminalMessage(transferTermMsg);
 
-    return { success: true, transferred: body.amount, to: body.toAgentId };
+    return { success: true, transferred: body.amount, received: receivedAmount, to: body.toAgentId };
+  });
+
+  // --- Referral ---
+
+  fastify.get('/v1/grid/referral', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const agent = await db.getAgent(agentId);
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' });
+
+    const referralCode = (agent as any).referralCode || null;
+    const stats = await db.getReferralStats(agentId);
+
+    return {
+      referralCode,
+      referralCount: stats.referralCount,
+      creditsEarned: stats.creditsEarned,
+    };
+  });
+
+  // --- Structure Details (Blueprint-aware click metadata) ---
+
+  fastify.get<{ Params: { instanceId: string } }>('/v1/grid/structures/:instanceId', async (request, reply) => {
+    const { instanceId } = request.params;
+    if (!instanceId || !instanceId.startsWith('bp_')) {
+      return reply.status(400).send({ error: 'Invalid blueprint instance ID.' });
+    }
+
+    const pieces = world.getWorldPrimitives().filter((primitive) => primitive.blueprintInstanceId === instanceId);
+    if (pieces.length === 0) {
+      return reply.status(404).send({ error: 'Structure not found.' });
+    }
+
+    const sortedPieces = [...pieces].sort((a, b) => a.createdAt - b.createdAt);
+    const firstPiece = sortedPieces[0];
+    const ownerAgentId = firstPiece.ownerAgentId;
+    const ownerAgent = await db.getAgent(ownerAgentId);
+
+    const summed = pieces.reduce(
+      (acc, piece) => ({
+        x: acc.x + piece.position.x,
+        z: acc.z + piece.position.z,
+      }),
+      { x: 0, z: 0 }
+    );
+    const center = {
+      x: summed.x / pieces.length,
+      z: summed.z / pieces.length,
+    };
+
+    let builtAt = Number.isFinite(firstPiece.createdAt) ? firstPiece.createdAt : null;
+    const parsedBlueprintStamp = /^bp_(.+)_(\d{10,})$/.exec(instanceId);
+    if (parsedBlueprintStamp) {
+      const parsed = Number(parsedBlueprintStamp[2]);
+      if (Number.isFinite(parsed)) {
+        builtAt = builtAt === null ? parsed : Math.min(builtAt, parsed);
+      }
+    }
+
+    let guild: { id: string; name: string } | null = null;
+    const guildId = await db.getAgentGuild(ownerAgentId);
+    if (guildId) {
+      const g = await db.getGuild(guildId);
+      if (g) {
+        guild = { id: g.id, name: g.name };
+      }
+    }
+
+    let directive: {
+      id: string;
+      type: 'grid' | 'guild' | 'bounty';
+      description: string;
+      status: string;
+      targetX?: number;
+      targetZ?: number;
+      targetStructureGoal?: number;
+      distanceFromTarget?: number;
+    } | null = null;
+
+    const directives = await db.getActiveDirectives();
+    let bestDirectiveDistance = Infinity;
+    for (const d of directives) {
+      if (typeof d.targetX !== 'number' || typeof d.targetZ !== 'number') continue;
+      const dist = Math.hypot(center.x - d.targetX, center.z - d.targetZ);
+      // Best-effort linkage: only attach directives that spatially target this structure area.
+      if (dist <= 160 && dist < bestDirectiveDistance) {
+        bestDirectiveDistance = dist;
+        directive = {
+          id: d.id,
+          type: d.type,
+          description: d.description,
+          status: d.status,
+          targetX: d.targetX,
+          targetZ: d.targetZ,
+          targetStructureGoal: d.targetStructureGoal,
+          distanceFromTarget: Math.round(dist),
+        };
+      }
+    }
+
+    return {
+      blueprintInstanceId: instanceId,
+      blueprintName: firstPiece.blueprintName || null,
+      builder: {
+        agentId: ownerAgentId,
+        name: ownerAgent?.name || firstPiece.ownerAgentName || ownerAgentId,
+      },
+      pieceCount: pieces.length,
+      builtAt,
+      center: {
+        x: Math.round(center.x),
+        z: Math.round(center.z),
+      },
+      guild,
+      directive,
+    };
   });
 
   // --- General ---
@@ -2303,6 +2867,34 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     latestChatMessageId: number;
   }
 
+  interface GridHeatMapCell {
+    x: number;
+    z: number;
+    density: number;
+  }
+
+  interface GridStatsNode {
+    id: string;
+    name: string;
+    tier: NodeTier;
+    center: { x: number; z: number };
+    structureCount: number;
+    connections: Array<{ targetId: string }>;
+  }
+
+  interface GridStatsResponse {
+    agentsOnline: number;
+    totalStructures: number;
+    totalGuilds: number;
+    activeDirectives: number;
+    heatMap: {
+      cellSize: number;
+      cells: GridHeatMapCell[];
+    };
+    nodes: GridStatsNode[];
+    generatedAt: number;
+  }
+
   const getStateLite = async (): Promise<StateLite> => {
     const [latestTerminal] = await db.getTerminalMessages(1);
     const [latestChat] = await db.getChatMessages(1);
@@ -2318,6 +2910,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
   };
   const STATE_MESSAGE_HISTORY_LIMIT = 30;
 
+  let statsCache: {
+    computedAt: number;
+    primitiveRevision: number;
+    payload: GridStatsResponse;
+  } | null = null;
+
   const stateLiteEtag = (lite: StateLite): string =>
     `W/"grid-lite-${lite.primitiveRevision}-${lite.agentsOnline}-${lite.latestTerminalMessageId}-${lite.latestChatMessageId}"`;
 
@@ -2332,6 +2930,74 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     }
     reply.header('ETag', etag);
     return lite;
+  });
+
+  fastify.get('/v1/grid/stats', async (request, reply) => {
+    const primitiveRevision = world.getPrimitiveRevision();
+    const now = Date.now();
+
+    if (
+      statsCache &&
+      statsCache.primitiveRevision === primitiveRevision &&
+      now - statsCache.computedAt < GRID_STATS_TTL_MS
+    ) {
+      reply.header('Cache-Control', 'public, max-age=30');
+      return statsCache.payload;
+    }
+
+    const primitives = world.getWorldPrimitives() as unknown as PrimitiveLike[];
+    const connectorPrimitives = primitives.filter(isConnectorPrimitive);
+    const structures = buildStructureSummaries(primitives);
+    const nodes = buildSettlementNodes(structures, connectorPrimitives);
+    const [guilds, directives] = await Promise.all([
+      db.getAllGuilds(),
+      db.getActiveDirectives(),
+    ]);
+
+    const heatMapCells = new Map<string, GridHeatMapCell>();
+    for (const primitive of primitives) {
+      const cellX = Math.floor(primitive.position.x / GRID_STATS_CELL_SIZE) * GRID_STATS_CELL_SIZE;
+      const cellZ = Math.floor(primitive.position.z / GRID_STATS_CELL_SIZE) * GRID_STATS_CELL_SIZE;
+      const key = `${cellX},${cellZ}`;
+      const existing = heatMapCells.get(key);
+      if (existing) {
+        existing.density += 1;
+      } else {
+        heatMapCells.set(key, { x: cellX, z: cellZ, density: 1 });
+      }
+    }
+
+    const payload: GridStatsResponse = {
+      agentsOnline: world.getAgentCount(),
+      totalStructures: structures.length,
+      totalGuilds: guilds.length,
+      activeDirectives: directives.length,
+      heatMap: {
+        cellSize: GRID_STATS_CELL_SIZE,
+        cells: Array.from(heatMapCells.values()).sort((a, b) => b.density - a.density),
+      },
+      nodes: nodes.map((node) => ({
+        id: node.id,
+        name: node.name,
+        tier: node.tier,
+        center: {
+          x: Math.round(node.center.x),
+          z: Math.round(node.center.z),
+        },
+        structureCount: node.structureCount,
+        connections: node.connections.map((connection) => ({ targetId: connection.targetId })),
+      })),
+      generatedAt: now,
+    };
+
+    statsCache = {
+      computedAt: now,
+      primitiveRevision,
+      payload,
+    };
+
+    reply.header('Cache-Control', 'public, max-age=30');
+    return payload;
   });
 
   // Lightweight agent position/status polling endpoint (avoids full primitive payload).
@@ -2546,7 +3212,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     try {
       const filePath = join(__dirname, '../blueprints.json');
       const raw = await readFile(filePath, 'utf-8');
-      const parsed = JSON.parse(raw);
+      const parsed = annotateBlueprintClassGates(JSON.parse(raw));
 
       // Optional: filter by tags
       const tagsParam = (request.query as any).tags;
@@ -2704,5 +3370,49 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       primitivesCleared: primsCleared,
       memoryEntriesCleared: memoryCleared,
     };
+  });
+
+  // --- Skills ---
+
+  fastify.get('/v1/skills', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const agent = await db.getAgent(agentId);
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' });
+
+    const agentClass = (agent as any).agentClass || 'builder';
+    const skills = getSkillsForClass(agentClass);
+
+    // Omit promptInjection from list response
+    return skills.map(s => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      class: s.class,
+    }));
+  });
+
+  fastify.get<{ Params: { id: string } }>('/v1/skills/:id', async (request, reply) => {
+    const agentId = await requireAgent(request, reply);
+    if (!agentId) return;
+
+    const agent = await db.getAgent(agentId);
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' });
+
+    const agentClass = (agent as any).agentClass || 'builder';
+    const skill = getSkillById(request.params.id);
+
+    if (!skill) {
+      return reply.status(404).send({ error: 'Skill not found' });
+    }
+
+    if (skill.class !== agentClass) {
+      return reply.status(403).send({
+        error: `This skill requires class '${skill.class}'. Your class is '${agentClass}'.`,
+      });
+    }
+
+    return skill;
   });
 }
