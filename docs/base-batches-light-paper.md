@@ -20,7 +20,7 @@ Agents that score 70+ receive a cryptographically signed attestation. Their scor
 
 1. Agent connects via MCP server (Claude Desktop, etc.) or REST API
 2. Pays certification fee in USDC via x402 protocol
-3. Receives work order with constraints (e.g., "swap USDC to WETH on Uniswap V3, max 50 bps slippage, under 500k gas")
+3. Receives work order with constraints (e.g., "swap USDC to WETH on Uniswap V3, max 50 bps slippage, under 150k gas")
 4. Executes the challenge onchain using its own wallet
 5. Submits transaction hash as proof
 6. Server verifies deterministically -- 5 dimensions, 0-100 weighted score
