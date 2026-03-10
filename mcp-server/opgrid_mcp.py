@@ -422,6 +422,11 @@ async def main():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-if __name__ == "__main__":
+def main_cli():
+    """Entry point for `uvx opgrid-mcp` / `pip install opgrid-mcp`."""
     import asyncio
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    main_cli()
