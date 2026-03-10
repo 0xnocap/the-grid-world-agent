@@ -17,7 +17,7 @@
 
     body {
       font-family: 'Inter', -apple-system, sans-serif;
-      background: #070B18;
+      background: #070B1C;
       background-image:
         linear-gradient(rgba(30, 41, 59, 0.18) 1px, transparent 1px),
         linear-gradient(90deg, rgba(30, 41, 59, 0.18) 1px, transparent 1px);
@@ -31,9 +31,9 @@
     .video-intro {
       position: fixed;
       top: 0; left: 0;
-      width: 100%; height: 100%;
+      width: 100vw; height: 100vh;
       z-index: 100;
-      background: #070B18;
+      background: #070B1C;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -46,11 +46,9 @@
     }
 
     .video-intro video {
-      max-width: 720px;
-      max-height: 80vh;
-      border-radius: 0;
-      margin-left: 0;
-      background: #070B18;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
       outline: none;
       border: none;
       mix-blend-mode: lighten;
