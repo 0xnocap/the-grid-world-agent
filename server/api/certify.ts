@@ -409,7 +409,18 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
       });
     }
 
-    const score = verifierResult.score;
+    let score = verifierResult.score;
+
+    // +5 bonus for custom slippage option D — agent calculated their own amountOutMinimum
+    const proofSlippageOption = (parsed.data.proof as any).slippageOption;
+    if (typeof proofSlippageOption === 'string' && proofSlippageOption.toUpperCase() === 'D') {
+      const slippageCheck = verifierResult.checks.find(c => c.name === 'slippage_management');
+      if (slippageCheck && slippageCheck.score > 0) {
+        score = Math.min(100, score + 5);
+        slippageCheck.detail = `${slippageCheck.detail} (+5 custom slippage bonus)`;
+      }
+    }
+
     const passingScore = typeof (template.config as any)?.passingScore === 'number'
       ? (template.config as any).passingScore
       : 70;
@@ -659,26 +670,23 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
       };
     }
 
-    // Build 5 slippage options — agent must choose wisely
-    // A: No protection (amountOutMinimum=0) — will score 0 on slippage
-    // B: Too tight (102% of quote) — will likely revert onchain
-    // C: Loose (5% slippage / 500 bps) — will pass but score low (~20)
-    // D: Moderate (1% slippage / 100 bps) — decent score (~80)
-    // E: Tight (0.5% slippage / 50 bps) — best score (~100)
-    const options: Record<string, { label: string; amountOutMinimum: string; calldata: string }> = {};
+    // Slippage challenge — shuffled, not in order. Agent must understand DeFi.
+    // A: 5% (500 bps) — loose, works but low score
+    // B: 0.5% (50 bps) — tight, best preset score
+    // C: 102% of quote — trap, tx reverts
+    // D: custom — agent provides own amountOutMinimum, +5 bonus if valid
+    // E: 1% (100 bps) — moderate
+    const options: Record<string, { label: string; amountOutMinimum: string; calldata: string; bonus?: number }> = {};
     const slippagePresets = [
-      { key: 'A', label: 'No slippage protection', bps: -10000 },   // amountOutMin = 0
-      { key: 'B', label: 'Ultra-tight tolerance',   bps: -200 },     // 102% of quote — will revert
-      { key: 'C', label: 'Wide tolerance',           bps: 500 },      // 5% slippage
-      { key: 'D', label: 'Moderate tolerance',        bps: 100 },      // 1% slippage
-      { key: 'E', label: 'Tight tolerance',           bps: 50 },       // 0.5% slippage
+      { key: 'A', label: 'Conservative tolerance',  bps: 500 },    // 5% — loose
+      { key: 'B', label: 'Aggressive tolerance',     bps: 50 },     // 0.5% — tight
+      { key: 'C', label: 'Maximum protection',       bps: -200 },   // 102% — reverts
+      { key: 'E', label: 'Balanced tolerance',        bps: 100 },    // 1% — moderate
     ];
 
     for (const preset of slippagePresets) {
       let minOut: bigint;
-      if (preset.bps <= -10000) {
-        minOut = 0n;
-      } else if (preset.bps < 0) {
+      if (preset.bps < 0) {
         // Negative bps = above quote (will revert)
         minOut = (quotedOutput * BigInt(10000 + Math.abs(preset.bps))) / 10000n;
       } else {
@@ -697,9 +705,17 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
       };
     }
 
+    // Option D: custom — agent provides their own amountOutMinimum for +5 bonus
+    options['D'] = {
+      label: 'Custom amount — you set amountOutMinimum yourself (+5 bonus points on slippage score if valid)',
+      amountOutMinimum: 'YOU_DECIDE',
+      calldata: 'Call ENCODE_SWAP again with { "slippageOption": "D", "amountOutMinimum": "<your value>" }',
+      bonus: 5,
+    };
+
     return {
       router: SWAP_ROUTER,
-      challenge: 'Choose a slippage option (A-E). Use the calldata from your chosen option in EXECUTE_ONCHAIN. Your choice affects your certification score.',
+      challenge: 'Choose a slippage option (A-E). Your choice directly affects your certification score. Option D lets you set your own amountOutMinimum for a +5 bonus — but you need to know what you\'re doing.',
       quotedOutput: quotedOutput.toString(),
       options,
       params: { tokenIn, tokenOut, fee, recipient: walletAddress, amountIn: amountIn.toString(), deadline: deadline.toString() },

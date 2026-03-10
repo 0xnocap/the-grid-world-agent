@@ -950,8 +950,23 @@ async function executeAction(
         const opts = (encResult as any).options;
         if (opts && typeof opts === 'object') {
           const chosen = typeof p.slippageOption === 'string' ? p.slippageOption.toUpperCase() : '';
-          if (chosen && opts[chosen]) {
-            // Agent pre-selected an option — use it
+          if (chosen === 'D' && (typeof p.amountOutMinimum === 'string' || typeof p.amountOutMinimum === 'number')) {
+            // Option D: custom — agent provided their own amountOutMinimum, re-call API to get calldata
+            const customResult = await api.encodeSwapCalldata({
+              recipient: typeof p.recipient === 'string' ? p.recipient : undefined,
+              amountIn: typeof p.amountIn === 'string' || typeof p.amountIn === 'number' ? String(p.amountIn) : undefined,
+              amountOutMinimum: String(p.amountOutMinimum),
+            });
+            (decision as any)._encodeSwapResult = JSON.stringify({
+              router: customResult.router,
+              calldata: customResult.calldata,
+              chosenOption: 'D (custom +5 bonus)',
+              amountOutMinimum: String(p.amountOutMinimum),
+              params: customResult.params,
+              usage: customResult.usage,
+            });
+          } else if (chosen && opts[chosen] && opts[chosen].calldata && !opts[chosen].calldata.startsWith('Call')) {
+            // Agent picked a preset option (A/B/C/E) — use its calldata
             (decision as any)._encodeSwapResult = JSON.stringify({
               router: encResult.router,
               calldata: opts[chosen].calldata,
@@ -963,14 +978,14 @@ async function executeAction(
           } else {
             // Present options summary (without raw calldata to save context)
             const optionSummary = Object.entries(opts).map(([k, v]: [string, any]) =>
-              `${k}: ${v.label} (amountOutMinimum=${v.amountOutMinimum})`
+              `${k}: ${v.label} (amountOutMinimum=${v.amountOutMinimum}${v.bonus ? `, +${v.bonus} bonus` : ''})`
             ).join(' | ');
             (decision as any)._encodeSwapResult = JSON.stringify({
               router: encResult.router,
               challenge: (encResult as any).challenge,
               quotedOutput: (encResult as any).quotedOutput,
               options: optionSummary,
-              instruction: 'Call ENCODE_SWAP again with payload { "slippageOption": "D" } (or A/B/C/E) to get the calldata for your chosen option. Pick wisely — this affects your certification score. Option A=no protection, B=will revert, C=loose, D=moderate, E=tight.',
+              instruction: 'Call ENCODE_SWAP again with { "slippageOption": "B" } (or A/C/D/E) to get calldata. Option D is custom: provide { "slippageOption": "D", "amountOutMinimum": "<your value>" } for +5 bonus points. Choose wisely — your choice affects your certification score.',
             });
           }
         } else {
@@ -1003,7 +1018,12 @@ async function executeAction(
           break;
         }
         try {
-          const proofResult = await api.submitCertificationProof(runId, { txHash });
+          const proofPayload: Record<string, unknown> = { txHash };
+          // Pass slippageOption through so custom option D gets +5 bonus
+          if (typeof p.slippageOption === 'string') {
+            proofPayload.slippageOption = p.slippageOption.toUpperCase();
+          }
+          const proofResult = await api.submitCertificationProof(runId, proofPayload as any);
           const passed = proofResult.verification?.passed;
           const score = (proofResult as any).score || 0;
           console.log(`[${name}] Cert proof for ${runId}: ${passed ? 'PASSED ✓' : 'FAILED ✗'} (score: ${score})`);
