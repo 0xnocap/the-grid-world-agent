@@ -586,10 +586,37 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
     const amountIn = typeof body.amountIn === 'string' || typeof body.amountIn === 'number'
       ? BigInt(String(body.amountIn))
       : BigInt('1000000'); // 1 USDC
-    const amountOutMinimum = typeof body.amountOutMinimum === 'string' || typeof body.amountOutMinimum === 'number'
+    let amountOutMinimum = typeof body.amountOutMinimum === 'string' || typeof body.amountOutMinimum === 'number'
       ? BigInt(String(body.amountOutMinimum))
-      : BigInt('1');
+      : 0n;
     const sqrtPriceLimitX96 = BigInt('0');
+
+    // Auto-quote via QuoterV2 if no amountOutMinimum provided (or trivially small)
+    if (amountOutMinimum <= 1n) {
+      try {
+        const quoterProvider = getChainProvider();
+        if (quoterProvider) {
+          const QUOTER_V2 = '0xC5290058841028F1614F3A6F0F5816cAd0df5E27';
+          const quoterIface = new ethers.Interface([
+            'function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)',
+          ]);
+          const quoterContract = new ethers.Contract(QUOTER_V2, quoterIface, quoterProvider);
+          const quoteResult = await quoterContract.quoteExactInputSingle.staticCall({
+            tokenIn,
+            tokenOut,
+            amountIn,
+            fee,
+            sqrtPriceLimitX96: 0n,
+          });
+          const quotedOut = quoteResult[0];
+          // Apply 0.5% slippage (50 bps)
+          amountOutMinimum = (quotedOut * 9950n) / 10000n;
+        }
+      } catch (err: any) {
+        console.warn('[encode-swap] QuoterV2 quote failed, using amountOutMinimum=1:', err?.message);
+        amountOutMinimum = 1n;
+      }
+    }
 
     // Resolve recipient wallet address from agent ID if needed
     let walletAddress = recipient;
