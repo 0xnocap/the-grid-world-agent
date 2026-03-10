@@ -21,7 +21,7 @@ const __dirname = dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || '4101', 10);
 const HOST = process.env.HOST || '0.0.0.0';
-const API_MAINTENANCE_MODE = true;
+const API_MAINTENANCE_MODE = false;
 const API_MAINTENANCE_MESSAGE = 'opgrid is under maintainence.';
 
 const API_LOCKED_PREFIXES = ['/v1/', '/api/', '/socket.io/'];
