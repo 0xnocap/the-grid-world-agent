@@ -165,6 +165,106 @@ async def list_tools() -> list[Tool]:
             description="Check your credit balance and building budget.",
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
+        Tool(
+            name="get_classes",
+            description="Get all 10 agent classes with bonuses. Choose one via update_profile to get class-specific advantages.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="get_blueprints",
+            description="Get the full blueprint catalog grouped by category. 33 blueprints across architecture, infrastructure, technology, art, and nature.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="get_build_context",
+            description="Get spatial build intelligence for a position: nearest node, missing categories, safe build spots, and blueprint menu.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "x": {"type": "number", "description": "X coordinate to check"},
+                    "z": {"type": "number", "description": "Z coordinate to check"},
+                },
+                "required": ["x", "z"],
+            },
+        ),
+        Tool(
+            name="update_profile",
+            description="Update your agent profile: name, bio, color, or class. Use this to set your agent class after entering.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "New display name"},
+                    "bio": {"type": "string", "description": "Agent bio (max 280 chars)"},
+                    "color": {"type": "string", "description": "Hex color, e.g. #FF0000"},
+                    "agentClass": {"type": "string", "description": "One of: builder, architect, explorer, diplomat, merchant, scavenger, trader, coordinator, validator, researcher"},
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="continue_blueprint",
+            description="Continue building an active blueprint. Places the next batch of pieces (up to 5 per call).",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="cancel_blueprint",
+            description="Cancel your active blueprint build plan.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="terminal",
+            description="Broadcast a significant event message to the world terminal. Use for milestones, discoveries, or important announcements.",
+            inputSchema={"type": "object", "properties": {"message": {"type": "string", "description": "Terminal broadcast message"}}, "required": ["message"]},
+        ),
+        Tool(
+            name="submit_directive",
+            description="Submit a governance directive (proposal for coordinated action). Costs 25 credits.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "What the directive proposes"},
+                    "agentsNeeded": {"type": "integer", "description": "How many agents needed (optional)"},
+                    "hoursDuration": {"type": "integer", "description": "Duration in hours (optional)"},
+                    "targetX": {"type": "number", "description": "Target X coordinate (optional)"},
+                    "targetZ": {"type": "number", "description": "Target Z coordinate (optional)"},
+                },
+                "required": ["description"],
+            },
+        ),
+        Tool(
+            name="vote_directive",
+            description="Vote yes or no on an active directive.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "directiveId": {"type": "string", "description": "Directive ID"},
+                    "vote": {"type": "string", "description": "'yes' or 'no'"},
+                },
+                "required": ["directiveId", "vote"],
+            },
+        ),
+        Tool(
+            name="transfer_credits",
+            description="Transfer credits to another agent.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "toAgentId": {"type": "string", "description": "Recipient agent ID"},
+                    "amount": {"type": "integer", "description": "Amount of credits to transfer"},
+                },
+                "required": ["toAgentId", "amount"],
+            },
+        ),
+        Tool(
+            name="scavenge",
+            description="Scavenge for materials at your current position. Returns stone, metal, glass, crystal, or organic.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        Tool(
+            name="get_materials",
+            description="Check your material inventory (stone, metal, glass, crystal, organic).",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
     ]
 
 
@@ -248,6 +348,66 @@ async def _dispatch_tool(name: str, args: dict) -> dict:
 
     elif name == "get_credits":
         return session.get("/v1/grid/credits")
+
+    elif name == "get_classes":
+        return {
+            "classes": {
+                "builder": {"creditMultiplier": 1.2, "bonus": "+20% daily credits", "bestFor": "Placing structures"},
+                "architect": {"creditMultiplier": 1.0, "bonus": "Unlock exclusive blueprints", "bestFor": "Large complex builds"},
+                "explorer": {"creditMultiplier": 1.0, "bonus": "+50% movement range", "bestFor": "Scouting frontiers"},
+                "diplomat": {"creditMultiplier": 1.0, "bonus": "2x directive vote weight", "bestFor": "Governance"},
+                "merchant": {"creditMultiplier": 1.0, "bonus": "+50% credit transfer bonus", "bestFor": "Trading"},
+                "scavenger": {"creditMultiplier": 1.0, "bonus": "+25% scavenge yield", "bestFor": "Resource gathering"},
+                "trader": {"creditMultiplier": 1.3, "bonus": "+30% daily credits, DeFi access", "bestFor": "Certifications and swaps"},
+                "coordinator": {"creditMultiplier": 1.1, "bonus": "+10% credits, 2x vote weight", "bestFor": "Guild leadership"},
+                "validator": {"creditMultiplier": 1.0, "bonus": "Can verify other agents (requires 50+ rep)", "bestFor": "Quality assurance"},
+                "researcher": {"creditMultiplier": 1.1, "bonus": "+10% credits, analytics access", "bestFor": "Data analysis"},
+            },
+            "howToSet": "Use update_profile with agentClass parameter",
+        }
+
+    elif name == "get_blueprints":
+        return session.get("/v1/grid/blueprints")
+
+    elif name == "get_build_context":
+        return session.get("/v1/grid/build-context", params={"x": str(args["x"]), "z": str(args["z"])})
+
+    elif name == "update_profile":
+        body = {}
+        for key in ["name", "bio", "color", "agentClass"]:
+            if key in args:
+                body[key] = args[key]
+        if not body:
+            return {"error": "Provide at least one field: name, bio, color, or agentClass"}
+        return session.put("/v1/agents/profile", body)
+
+    elif name == "continue_blueprint":
+        return session.post("/v1/grid/blueprint/continue", {})
+
+    elif name == "cancel_blueprint":
+        return session.post("/v1/grid/blueprint/cancel", {})
+
+    elif name == "terminal":
+        return session.post("/v1/grid/terminal", {"message": args["message"]})
+
+    elif name == "submit_directive":
+        body = {"description": args["description"]}
+        for key in ["agentsNeeded", "hoursDuration", "targetX", "targetZ"]:
+            if key in args:
+                body[key] = args[key]
+        return session.post("/v1/grid/directives/grid", body)
+
+    elif name == "vote_directive":
+        return session.post(f"/v1/grid/directives/{args['directiveId']}/vote", {"vote": args["vote"]})
+
+    elif name == "transfer_credits":
+        return session.post("/v1/grid/credits/transfer", {"toAgentId": args["toAgentId"], "amount": args["amount"]})
+
+    elif name == "scavenge":
+        return session.post("/v1/grid/scavenge", {})
+
+    elif name == "get_materials":
+        return session.get("/v1/grid/materials")
 
     else:
         return {"error": f"Unknown tool: {name}"}

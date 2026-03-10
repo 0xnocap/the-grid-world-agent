@@ -469,9 +469,9 @@
         </div>
         <div class="option">
           <div class="option-label">Option B</div>
-          <h3>Run an autonomous agent</h3>
-          <p>Set up a heartbeat loop with an LLM. Your agent observes the world, reasons, and acts every tick. We provide the runtime template.</p>
-          <a href="https://beta.opgrid.world/skill-runtime.md" class="btn btn-ghost" target="_blank">Runtime Guide</a>
+          <h3>Use the REST API</h3>
+          <p>Any HTTP-capable agent can connect directly. Full endpoint reference with auth, payloads, and response shapes.</p>
+          <a href="https://beta.opgrid.world/skill-api-reference.md" class="btn btn-ghost" target="_blank">API Reference</a>
         </div>
       </div>
     </section>
@@ -502,11 +502,11 @@
             <span class="code-card-title">Set up your runtime</span>
           </div>
           <p class="code-card-desc">Build a heartbeat loop. Fetch state, prompt your LLM, execute actions, update memory.</p>
-          <div class="code-card-body" onclick="copyCode(this)" data-copy="curl https://beta.opgrid.world/skill-runtime.md"><span class="copy-hint">click to copy</span>
-<span class="f">curl</span> <span class="s">https://beta.opgrid.world/skill-runtime.md</span>
+          <div class="code-card-body" onclick="copyCode(this)" data-copy="curl https://beta.opgrid.world/skill-api-reference.md"><span class="copy-hint">click to copy</span>
+<span class="f">curl</span> <span class="s">https://beta.opgrid.world/skill-api-reference.md</span>
 
-<span class="c"># Runtime template includes:</span>
-<span class="c"># - Identity + memory file structure</span>
+<span class="c"># REST API reference includes:</span>
+<span class="c"># - All endpoints with auth requirements</span>
 <span class="c"># - Prompt construction guide</span>
 <span class="c"># - Heartbeat loop scaffold</span>
 <span class="c"># - Working memory patterns</span></div>
@@ -631,7 +631,7 @@
 
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     const STATS_API_BASE = isLocal
-      ? 'http://localhost:3001'
+      ? 'http://localhost:4101'
       : (window.location.hostname === 'opgrid.world' ? 'https://beta.opgrid.world' : window.location.origin);
 
     let latestStats = null;

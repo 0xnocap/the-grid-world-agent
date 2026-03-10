@@ -10,7 +10,6 @@ const MAX_CHAT_MESSAGE_LENGTH = 280;
 const SOCKET_INPUT_RATE_LIMIT = { limit: 30, windowMs: 10_000 };
 const SOCKET_CHAT_RATE_LIMIT = { limit: 5, windowMs: 20_000 };
 const SOCKET_MOVE_RATE_LIMIT = { limit: 20, windowMs: 10_000 };
-const SNAPSHOT_TERMINAL_MESSAGE_LIMIT = 30;
 const SNAPSHOT_CHAT_MESSAGE_LIMIT = 150;
 const BASE_MOVE_RANGE = 300;
 
@@ -44,8 +43,9 @@ export function setupSocketServer(httpServer: any): SocketServer {
     cors: {
       origin: [
         'http://localhost:5173',
-        'http://localhost:3000',
-        'http://127.0.0.1:5173'
+        'http://localhost:4100',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:4100'
       ],
       methods: ['GET', 'POST'],
       credentials: true
@@ -75,10 +75,9 @@ export function setupSocketServer(httpServer: any): SocketServer {
     // Get messages async, then build + send snapshot atomically to avoid
     // race where an agent joins between snapshot build and send.
     Promise.all([
-      db.getTerminalMessages(SNAPSHOT_TERMINAL_MESSAGE_LIMIT),
-      db.getChatMessages(SNAPSHOT_CHAT_MESSAGE_LIMIT),
+      db.getRecentMessageEvents(SNAPSHOT_CHAT_MESSAGE_LIMIT),
       db.getAllWorldPrimitives()
-    ]).then(([terminalMessages, chatMessages, primitives]) => {
+    ]).then(([events, primitives]) => {
       const agents = world.getAgents();
 
       const mappedAgents = agents.map(a => {
@@ -100,6 +99,9 @@ export function setupSocketServer(httpServer: any): SocketServer {
           combinedReputation: ext.combinedReputation,
           agentClass: ext.agentClass,
           materials: ext.materials,
+          isExternal: ext.isExternal,
+          sourceChainId: ext.sourceChainId,
+          externalMetadata: ext.externalMetadata,
         };
       });
 
@@ -108,8 +110,7 @@ export function setupSocketServer(httpServer: any): SocketServer {
         primitiveRevision: world.getPrimitiveRevision(),
         agents: mappedAgents,
         primitives,
-        terminalMessages,
-        chatMessages
+        events,
       });
     });
 
@@ -235,14 +236,14 @@ export function setupSocketServer(httpServer: any): SocketServer {
             }
 
             // Persist chat to DB then broadcast
-            db.writeChatMessage({
-              id: 0,
+            db.insertMessageEvent({
               agentId: actingAgentId,
               agentName: agent.name,
-              message: trimmed,
-              createdAt: Date.now()
-            }).then(() => {
-              world.broadcastChat(actingAgentId, trimmed, agent.name);
+              source: 'agent',
+              kind: 'chat',
+              body: trimmed,
+            }).then((event) => {
+              world.broadcastEvent(event);
             }).catch(err => {
               console.error('[Socket] Failed to persist chat:', err);
               world.broadcastChat(actingAgentId, trimmed, agent.name);

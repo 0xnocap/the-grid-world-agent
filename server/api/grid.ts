@@ -27,6 +27,7 @@ import {
 import type { BlueprintBuildPlan } from '../types.js';
 import { EXEMPT_SHAPES, validateBuildPosition } from '../build-validation.js';
 import { getSkillsForClass, getSkillById } from '../data/skills.js';
+import { submitDirectiveOnChain, syncGuildOnChain } from '../chain.js';
 
 // --- Spatial Computation Helpers ---
 
@@ -1233,40 +1234,32 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     world.addWorldPrimitive(primitive);
 
     if (placed.repReward && placed.totalBuilt) {
-      const repTermMsg = {
-        id: 0,
-        agentId: 'system',
-        agentName: 'System',
-        message: `🏆 ${builderName} reached a milestone (${placed.totalBuilt} primitives built) and earned +${placed.repReward} reputation!`,
-        createdAt: Date.now()
-      };
-      await db.writeTerminalMessage(repTermMsg);
-      world.broadcastTerminalMessage(repTermMsg);
+      const repEvent = await db.insertMessageEvent({
+        source: 'system', kind: 'reputation',
+        body: `🏆 ${builderName} reached a milestone (${placed.totalBuilt} primitives built) and earned +${placed.repReward} reputation!`,
+        metadata: { agentId, totalBuilt: placed.totalBuilt, repReward: placed.repReward },
+      });
+      world.broadcastEvent(repEvent);
     }
 
     if (placed.materialEarned) {
-      const matTermMsg = {
-        id: 0,
-        agentId: 'system',
-        agentName: 'System',
-        message: `⛏️ ${builderName} earned 1 ${placed.materialEarned} material for placing ${MATERIAL_CONFIG.EARN_EVERY_N_PRIMITIVES} primitives.`,
-        createdAt: Date.now()
-      };
-      await db.writeTerminalMessage(matTermMsg);
-      world.broadcastTerminalMessage(matTermMsg);
+      const matEvent = await db.insertMessageEvent({
+        source: 'system', kind: 'material',
+        body: `⛏️ ${builderName} earned 1 ${placed.materialEarned} material for placing ${MATERIAL_CONFIG.EARN_EVERY_N_PRIMITIVES} primitives.`,
+        metadata: { agentId, material: placed.materialEarned },
+      });
+      world.broadcastEvent(matEvent);
     }
 
-    // Write build confirmation to terminal feed (not chat — chat is for agent conversations)
+    // Write build confirmation to unified feed
     const pos = body.position;
-    const termMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `${builderName} built a ${body.shape} at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(termMsg);
-    world.broadcastTerminalMessage(termMsg);
+    const buildEvent = await db.insertMessageEvent({
+      agentId, agentName: builderName,
+      source: 'system', kind: 'build',
+      body: `${builderName} built a ${body.shape} at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`,
+      metadata: { shape: body.shape, position: { x: pos.x, y: pos.y, z: pos.z } },
+    });
+    world.broadcastEvent(buildEvent);
 
     // --- Build Quality Warnings (soft feedback, not rejections) ---
     const warnings: string[] = [];
@@ -1334,11 +1327,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: 'Agent not found.' });
     }
     const requesterClass = ((requester as any)?.agentClass as string | undefined) || 'builder';
-    if (isArchitectExclusiveBlueprint(blueprint) && requesterClass !== 'architect') {
-      return reply.code(403).send({
-        error: `Blueprint '${body.name}' is architect-exclusive. Your class is '${requesterClass}'.`,
-      });
-    }
+    // Class gates disabled for demo — all agents can build any blueprint
+    // if (isArchitectExclusiveBlueprint(blueprint) && requesterClass !== 'architect') {
+    //   return reply.code(403).send({
+    //     error: `Blueprint '${body.name}' is architect-exclusive. Your class is '${requesterClass}'.`,
+    //   });
+    // }
 
     // Keep blueprint starts local so agents do not create remote plans they
     // cannot continue immediately.
@@ -1380,9 +1374,9 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       bpTags.includes('tier-3');
     if (isTier3Blueprint) {
       const combinedReputation = await db.getCombinedReputation(agentId);
-      if (combinedReputation < 15) {
+      if (combinedReputation < 1) {
         return reply.code(403).send({
-          error: `Tier-3 blueprints require combined reputation >= 15. Current: ${combinedReputation}.`
+          error: `Tier-3 blueprints require at least 1 certification pass. Current reputation: ${combinedReputation}. Complete a SWAP_EXECUTION_V1 certification first.`
         });
       }
     }
@@ -1623,15 +1617,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     try {
       const builder = await db.getAgent(agentId);
       const builderName = builder?.name || agentId;
-      const termMsg = {
-        id: 0,
-        agentId: 'system',
-        agentName: 'System',
-        message: `${builderName} started ${body.name} at (${body.anchorX}, ${body.anchorZ}) [0/${allPrimitives.length}]`,
-        createdAt: Date.now(),
-      };
-      await db.writeTerminalMessage(termMsg);
-      world.broadcastTerminalMessage(termMsg);
+      const startEvent = await db.insertMessageEvent({
+        agentId, agentName: builderName,
+        source: 'system', kind: 'build',
+        body: `${builderName} started ${body.name} at (${body.anchorX}, ${body.anchorZ}) [0/${allPrimitives.length}]`,
+        metadata: { blueprint: body.name, anchorX: body.anchorX, anchorZ: body.anchorZ, total: allPrimitives.length },
+      });
+      world.broadcastEvent(startEvent);
     } catch (err) {
       console.warn('[Blueprint] Failed to broadcast start message:', err);
     }
@@ -1763,27 +1755,21 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
         world.addWorldPrimitive(primitive);
 
         if (placed.repReward && placed.totalBuilt) {
-          const repTermMsg = {
-            id: 0,
-            agentId: 'system',
-            agentName: 'System',
-            message: `🏆 ${builderName} reached a milestone (${placed.totalBuilt} primitives built) and earned +${placed.repReward} reputation!`,
-            createdAt: Date.now()
-          };
-          await db.writeTerminalMessage(repTermMsg);
-          world.broadcastTerminalMessage(repTermMsg);
+          const repEvent = await db.insertMessageEvent({
+            source: 'system', kind: 'reputation',
+            body: `🏆 ${builderName} reached a milestone (${placed.totalBuilt} primitives built) and earned +${placed.repReward} reputation!`,
+            metadata: { agentId, totalBuilt: placed.totalBuilt, repReward: placed.repReward },
+          });
+          world.broadcastEvent(repEvent);
         }
 
         if (placed.materialEarned) {
-          const matTermMsg = {
-            id: 0,
-            agentId: 'system',
-            agentName: 'System',
-            message: `⛏️ ${builderName} earned 1 ${placed.materialEarned} material for placing ${MATERIAL_CONFIG.EARN_EVERY_N_PRIMITIVES} primitives.`,
-            createdAt: Date.now()
-          };
-          await db.writeTerminalMessage(matTermMsg);
-          world.broadcastTerminalMessage(matTermMsg);
+          const matEvent = await db.insertMessageEvent({
+            source: 'system', kind: 'material',
+            body: `⛏️ ${builderName} earned 1 ${placed.materialEarned} material for placing ${MATERIAL_CONFIG.EARN_EVERY_N_PRIMITIVES} primitives.`,
+            metadata: { agentId, material: placed.materialEarned },
+          });
+          world.broadcastEvent(matEvent);
         }
 
         plan.placedCount++;
@@ -1796,15 +1782,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     // Broadcast a single build message for the batch (terminal, not chat)
     const successCount = results.filter(r => r.success).length;
     if (successCount > 0) {
-      const termMsg = {
-        id: 0,
-        agentId: 'system',
-        agentName: 'System',
-        message: `${builderName} placed ${successCount} pieces of ${plan.blueprintName} at (${plan.anchorX}, ${plan.anchorZ}) [${plan.placedCount}/${plan.totalPrimitives}]`,
-        createdAt: Date.now(),
-      };
-      await db.writeTerminalMessage(termMsg);
-      world.broadcastTerminalMessage(termMsg);
+      const batchEvent = await db.insertMessageEvent({
+        agentId, agentName: builderName,
+        source: 'system', kind: 'build',
+        body: `${builderName} placed ${successCount} pieces of ${plan.blueprintName} at (${plan.anchorX}, ${plan.anchorZ}) [${plan.placedCount}/${plan.totalPrimitives}]`,
+        metadata: { blueprint: plan.blueprintName, placed: plan.placedCount, total: plan.totalPrimitives },
+      });
+      world.broadcastEvent(batchEvent);
     }
 
     // Check completion
@@ -1816,15 +1800,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       const completionMsg = failedCount === 0
         ? `${builderName} completed ${plan.blueprintName} at (${plan.anchorX}, ${plan.anchorZ}) [${plan.placedCount}/${plan.totalPrimitives}]`
         : `${builderName} completed ${plan.blueprintName} at (${plan.anchorX}, ${plan.anchorZ}) with failures: placed ${plan.placedCount}/${plan.totalPrimitives}, failed ${failedCount}`;
-      const termMsg = {
-        id: 0,
-        agentId: 'system',
-        agentName: 'System',
-        message: completionMsg,
-        createdAt: Date.now(),
-      };
-      await db.writeTerminalMessage(termMsg);
-      world.broadcastTerminalMessage(termMsg);
+      const completionEvent = await db.insertMessageEvent({
+        agentId, agentName: builderName,
+        source: 'system', kind: 'build',
+        body: completionMsg,
+        metadata: { blueprint: plan.blueprintName, placed: plan.placedCount, total: plan.totalPrimitives },
+      });
+      world.broadcastEvent(completionEvent);
 
       try {
         await db.deleteBlueprintBuildPlan(agentId);
@@ -2071,22 +2053,18 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     if (!agent) return reply.status(404).send({ error: 'Agent not found' });
 
     const body = WriteTerminalSchema.parse(request.body);
-    const message = {
-      id: 0, // assigned by DB
-      agentId,
-      agentName: agent.name,
-      message: body.message,
-      createdAt: Date.now()
-    };
+    const event = await db.insertMessageEvent({
+      agentId, agentName: agent.name,
+      source: 'agent', kind: 'status',
+      body: body.message,
+    });
+    world.broadcastEvent(event);
 
-    const saved = await db.writeTerminalMessage(message);
-    world.broadcastTerminalMessage(saved);
-
-    return saved;
+    return event;
   });
 
   fastify.get('/v1/grid/terminal', async (request, reply) => {
-    return await db.getTerminalMessages(50);
+    return await db.getRecentMessageEvents(50);
   });
 
   // --- Human-Agent DMs (REST polling inbox) ---
@@ -2195,6 +2173,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     }
 
     const combinedReputation = await db.getCombinedReputation(agentId);
+    const isExternal = (agent as any).isExternal === true;
+    if (isExternal && combinedReputation <= 5) {
+      return reply.status(403).send({
+        error: `External visitors cannot submit directives until combined reputation exceeds 5. Current: ${combinedReputation}.`
+      });
+    }
     if (combinedReputation < 5) {
       return reply.status(403).send({
         error: `Combined reputation of 5 required to submit a directive. Current: ${combinedReputation}.`
@@ -2257,16 +2241,34 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     await db.createDirective(directive);
     world.broadcastDirective(directive);
 
-    // Write directive confirmation to terminal feed
-    const termMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `${agent.name} proposed directive: "${body.description}" (needs ${body.agentsNeeded} agents)`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(termMsg);
-    world.broadcastTerminalMessage(termMsg);
+    const proposerTokenId = Number((agent as any)?.erc8004AgentId || 0);
+    if (Number.isFinite(proposerTokenId) && proposerTokenId > 0) {
+      try {
+        const onchain = await submitDirectiveOnChain({
+          kind: 'solo',
+          proposerAgentTokenId: proposerTokenId,
+          objective: body.description,
+          agentsNeeded: body.agentsNeeded,
+          x: Math.round(body.targetX ?? 0),
+          z: Math.round(body.targetZ ?? 0),
+          hoursDuration: body.hoursDuration,
+        });
+        if (onchain?.txHash) {
+          console.log(`[Chain] Synced solo directive ${directive.id} -> tx ${onchain.txHash}`);
+        }
+      } catch (error) {
+        console.warn('[Chain] Failed to sync solo directive on-chain (non-blocking):', error);
+      }
+    }
+
+    // Write directive confirmation to unified feed
+    const directiveEvent = await db.insertMessageEvent({
+      agentId, agentName: agent.name,
+      source: 'system', kind: 'directive',
+      body: `${agent.name} proposed directive: "${body.description}" (needs ${body.agentsNeeded} agents)`,
+      metadata: { directiveId: directive.id, agentsNeeded: body.agentsNeeded },
+    });
+    world.broadcastEvent(directiveEvent);
 
     return directive;
   });
@@ -2280,6 +2282,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     const agent = await db.getAgent(agentId);
     const combinedReputation = await db.getCombinedReputation(agentId);
+    const isExternal = (agent as any)?.isExternal === true;
+    if (isExternal && combinedReputation <= 5) {
+      return reply.status(403).send({
+        error: `External visitors cannot submit guild directives until combined reputation exceeds 5. Current: ${combinedReputation}.`
+      });
+    }
     if (!agent || combinedReputation < 5) {
       return reply.status(403).send({
         error: `Combined reputation of 5 required to submit a guild directive. Current: ${combinedReputation}.`
@@ -2328,6 +2336,28 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     await db.createDirective(directive);
     world.broadcastDirective(directive);
 
+    const proposerTokenId = Number((agent as any)?.erc8004AgentId || 0);
+    const numericGuildId = Number(guildId);
+    if (Number.isFinite(proposerTokenId) && proposerTokenId > 0 && Number.isFinite(numericGuildId) && numericGuildId > 0) {
+      try {
+        const onchain = await submitDirectiveOnChain({
+          kind: 'guild',
+          guildId: numericGuildId,
+          proposerAgentTokenId: proposerTokenId,
+          objective: body.description,
+          agentsNeeded: body.agentsNeeded,
+          x: Math.round(body.targetX ?? 0),
+          z: Math.round(body.targetZ ?? 0),
+          hoursDuration: body.hoursDuration,
+        });
+        if (onchain?.txHash) {
+          console.log(`[Chain] Synced guild directive ${directive.id} -> tx ${onchain.txHash}`);
+        }
+      } catch (error) {
+        console.warn('[Chain] Failed to sync guild directive on-chain (non-blocking):', error);
+      }
+    }
+
     return directive;
   });
 
@@ -2351,15 +2381,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     // Write vote confirmation to terminal feed
     const voterName = voter?.name || agentId;
     const voteLabel = voterClass === 'diplomat' ? `${body.vote} (2x diplomat weight)` : body.vote;
-    const termMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `${voterName} voted ${voteLabel} on directive ${id}`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(termMsg);
-    world.broadcastTerminalMessage(termMsg);
+    const voteEvent = await db.insertMessageEvent({
+      agentId, agentName: voterName,
+      source: 'system', kind: 'directive',
+      body: `${voterName} voted ${voteLabel} on directive ${id}`,
+      metadata: { directiveId: id, vote: body.vote },
+    });
+    world.broadcastEvent(voteEvent);
 
     // Check if directive should be passed (yes_votes >= agentsNeeded)
     const directiveData = await db.getDirective(id);
@@ -2373,30 +2401,24 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
       const submitter = await db.getAgent(directiveData.submittedBy);
       const submitterName = submitter?.name || directiveData.submittedBy;
-      const passedTermMsg = {
-        id: 0,
-        agentId: 'system',
-        agentName: 'System',
-        message: `Directive passed: "${directiveData.description}" — now in progress. ${submitterName} earned ${reward} credits.`,
-        createdAt: Date.now()
-      };
-      await db.writeTerminalMessage(passedTermMsg);
-      world.broadcastTerminalMessage(passedTermMsg);
+      const passedEvent = await db.insertMessageEvent({
+        source: 'system', kind: 'directive',
+        body: `Directive passed: "${directiveData.description}" — now in progress. ${submitterName} earned ${reward} credits.`,
+        metadata: { directiveId: id, reward },
+      });
+      world.broadcastEvent(passedEvent);
     }
 
     // Check if directive should be declined (no_votes >= agentsNeeded)
     if (directiveData && directiveData.status === 'active' && directiveData.noVotes >= directiveData.agentsNeeded) {
       await db.declineDirective(id);
 
-      const declinedTermMsg = {
-        id: 0,
-        agentId: 'system',
-        agentName: 'System',
-        message: `Directive declined: "${directiveData.description}" — agents voted it down.`,
-        createdAt: Date.now()
-      };
-      await db.writeTerminalMessage(declinedTermMsg);
-      world.broadcastTerminalMessage(declinedTermMsg);
+      const declinedEvent = await db.insertMessageEvent({
+        source: 'system', kind: 'directive',
+        body: `Directive declined: "${directiveData.description}" — agents voted it down.`,
+        metadata: { directiveId: id },
+      });
+      world.broadcastEvent(declinedEvent);
     }
 
     return { success: true };
@@ -2427,15 +2449,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     // No credit reward — building itself earns credits
     const completer = await db.getAgent(agentId);
     const completerName = completer?.name || agentId;
-    const completionTermMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `Directive completed by ${completerName}: "${directiveData.description}" — objective achieved!`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(completionTermMsg);
-    world.broadcastTerminalMessage(completionTermMsg);
+    const completionEvent = await db.insertMessageEvent({
+      agentId, agentName: completerName,
+      source: 'system', kind: 'directive',
+      body: `Directive completed by ${completerName}: "${directiveData.description}" — objective achieved!`,
+      metadata: { directiveId: id },
+    });
+    world.broadcastEvent(completionEvent);
 
     return { success: true, completed: true };
   });
@@ -2448,6 +2468,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     const commander = await db.getAgent(commanderId);
     const combinedReputation = await db.getCombinedReputation(commanderId);
+    const isExternal = (commander as any)?.isExternal === true;
+    if (isExternal && combinedReputation <= 5) {
+      return reply.status(403).send({
+        error: `External visitors cannot create guilds until combined reputation exceeds 5. Current: ${combinedReputation}.`
+      });
+    }
     if (!commander || combinedReputation < 10) {
       return reply.status(403).send({
         error: `Combined reputation of 10 required to create a guild. Current: ${combinedReputation}.`
@@ -2473,6 +2499,33 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     await db.createGuild(guild, [commanderId, body.viceCommanderId]);
     world.broadcastGuild(guild);
+
+    const commanderTokenId = Number((commander as any)?.erc8004AgentId || 0);
+    const vice = await db.getAgent(body.viceCommanderId);
+    const viceTokenId = Number((vice as any)?.erc8004AgentId || 0);
+    const viceWallet = (vice as any)?.ownerId as string | undefined;
+    if (
+      Number.isFinite(commanderTokenId) &&
+      commanderTokenId > 0 &&
+      Number.isFinite(viceTokenId) &&
+      viceTokenId > 0 &&
+      typeof viceWallet === 'string' &&
+      viceWallet.length > 0
+    ) {
+      try {
+        const onchain = await syncGuildOnChain({
+          name: guild.name,
+          lieutenant: viceWallet,
+          captainAgentTokenId: commanderTokenId,
+          lieutenantAgentTokenId: viceTokenId,
+        });
+        if (onchain?.txHash) {
+          console.log(`[Chain] Synced guild ${guild.id} -> tx ${onchain.txHash}`);
+        }
+      } catch (error) {
+        console.warn('[Chain] Failed to sync guild on-chain (non-blocking):', error);
+      }
+    }
 
     return guild;
   });
@@ -2508,15 +2561,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     const joiner = await db.getAgent(agentId);
     const joinerName = joiner?.name || agentId;
-    const joinTermMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `${joinerName} joined guild "${guild.name}"`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(joinTermMsg);
-    world.broadcastTerminalMessage(joinTermMsg);
+    const joinEvent = await db.insertMessageEvent({
+      agentId, agentName: joinerName,
+      source: 'system', kind: 'guild',
+      body: `${joinerName} joined guild "${guild.name}"`,
+      metadata: { guildId: id, guildName: guild.name },
+    });
+    world.broadcastEvent(joinEvent);
 
     return { success: true, guildId: id, guildName: guild.name, alreadyMember: false };
   });
@@ -2575,15 +2626,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     const senderName = sender.name || agentId;
     const bonusLabel = receivedAmount > body.amount ? ` (+${receivedAmount - body.amount} merchant bonus)` : '';
-    const tradeTermMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `${senderName} traded ${body.amount} ${body.material} to ${recipient.name}${bonusLabel}`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(tradeTermMsg);
-    world.broadcastTerminalMessage(tradeTermMsg);
+    const tradeEvent = await db.insertMessageEvent({
+      agentId, agentName: senderName,
+      source: 'system', kind: 'trade',
+      body: `${senderName} traded ${body.amount} ${body.material} to ${recipient.name}${bonusLabel}`,
+      metadata: { material: body.material, amount: body.amount, toAgentId: body.toAgentId },
+    });
+    world.broadcastEvent(tradeEvent);
 
     return {
       success: true,
@@ -2608,21 +2657,28 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     const agent = await db.getAgent(agentId);
     const agentClass = (agent as any)?.agentClass as string | undefined;
-    if (agentClass !== 'scavenger') {
-      return reply.status(403).send({ error: 'Only scavenger class agents can use scavenge.' });
-    }
+    const isScavenger = agentClass === 'scavenger';
 
+    // Base yield for all classes, scavenger gets bonus
+    const baseYield = MATERIAL_CONFIG.SCAVENGE_YIELD;
+    const yieldMultiplier = isScavenger ? 1.25 : 1.0;
+
+    // All agents can scavenge from world activity (not just abandoned structures)
+    // This represents gathering materials from the environment
     const abandonedStructures = await db.getAbandonedStructureCount(7);
-    if (abandonedStructures <= 0) {
+    const worldPrimitiveCount = world.getWorldPrimitives().length;
+    // Base scavenge opportunity: at least 1 if world has any structures, plus abandoned
+    const scavengeOpportunity = Math.max(worldPrimitiveCount > 0 ? 1 : 0, abandonedStructures);
+    if (scavengeOpportunity <= 0) {
       return {
         success: true,
-        abandonedStructures: 0,
+        scavengeOpportunity: 0,
         harvested: emptyMaterialCounts(),
         totalHarvested: 0
       };
     }
 
-    const totalHarvested = Math.min(5, abandonedStructures * MATERIAL_CONFIG.SCAVENGE_YIELD);
+    const totalHarvested = Math.min(5, Math.ceil(scavengeOpportunity * baseYield * yieldMultiplier));
     const harvested = emptyMaterialCounts();
     for (let i = 0; i < totalHarvested; i++) {
       const found = await db.addRandomMaterial(agentId);
@@ -2630,21 +2686,20 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     }
 
     const scavengerName = agent?.name || agentId;
-    const scavengeTermMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `🧲 ${scavengerName} scavenged ${totalHarvested} materials from ${abandonedStructures} abandoned structures.`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(scavengeTermMsg);
-    world.broadcastTerminalMessage(scavengeTermMsg);
+    const bonusNote = isScavenger ? ' (scavenger bonus!)' : '';
+    const scavengeEvent = await db.insertMessageEvent({
+      agentId, agentName: scavengerName,
+      source: 'system', kind: 'scavenge',
+      body: `🧲 ${scavengerName} scavenged ${totalHarvested} materials${bonusNote}`,
+      metadata: { totalHarvested, isScavenger },
+    });
+    world.broadcastEvent(scavengeEvent);
 
     return {
       success: true,
-      abandonedStructures,
       harvested,
-      totalHarvested
+      totalHarvested,
+      scavengerBonus: isScavenger,
     };
   });
 
@@ -2699,15 +2754,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     // Broadcast transfer to terminal
     const senderName = sender?.name || agentId;
     const bonusLabel = receivedAmount > body.amount ? ` (+${receivedAmount - body.amount} merchant bonus)` : '';
-    const transferTermMsg = {
-      id: 0,
-      agentId: 'system',
-      agentName: 'System',
-      message: `${senderName} transferred ${body.amount} credits to ${recipient.name}${bonusLabel}`,
-      createdAt: Date.now()
-    };
-    await db.writeTerminalMessage(transferTermMsg);
-    world.broadcastTerminalMessage(transferTermMsg);
+    const transferEvent = await db.insertMessageEvent({
+      agentId, agentName: senderName,
+      source: 'system', kind: 'transfer',
+      body: `${senderName} transferred ${body.amount} credits to ${recipient.name}${bonusLabel}`,
+      metadata: { amount: body.amount, toAgentId: body.toAgentId, received: receivedAmount },
+    });
+    world.broadcastEvent(transferEvent);
 
     return { success: true, transferred: body.amount, received: receivedAmount, to: body.toAgentId };
   });
@@ -2863,8 +2916,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     primitiveRevision: number;
     agentsOnline: number;
     primitiveCount: number;
-    latestTerminalMessageId: number;
-    latestChatMessageId: number;
+    latestEventId: number;
   }
 
   interface GridHeatMapCell {
@@ -2896,16 +2948,14 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
   }
 
   const getStateLite = async (): Promise<StateLite> => {
-    const [latestTerminal] = await db.getTerminalMessages(1);
-    const [latestChat] = await db.getChatMessages(1);
+    const [latestEvent] = await db.getRecentMessageEvents(1);
 
     return {
       tick: world.getCurrentTick(),
       primitiveRevision: world.getPrimitiveRevision(),
       agentsOnline: world.getAgentCount(),
       primitiveCount: world.getWorldPrimitiveCount(),
-      latestTerminalMessageId: latestTerminal?.id || 0,
-      latestChatMessageId: latestChat?.id || 0,
+      latestEventId: latestEvent?.id || 0,
     };
   };
   const STATE_MESSAGE_HISTORY_LIMIT = 30;
@@ -2917,7 +2967,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
   } | null = null;
 
   const stateLiteEtag = (lite: StateLite): string =>
-    `W/"grid-lite-${lite.primitiveRevision}-${lite.agentsOnline}-${lite.latestTerminalMessageId}-${lite.latestChatMessageId}"`;
+    `W/"grid-lite-${lite.primitiveRevision}-${lite.agentsOnline}-${lite.latestEventId}"`;
 
   fastify.get('/v1/grid/state-lite', async (request, reply) => {
     await maybeTouchAuthenticatedAgent(request);
@@ -3031,7 +3081,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       .map(a => `${a.id}:${a.position.x.toFixed(1)},${a.position.z.toFixed(1)},${a.status}`)
       .sort()
       .join('|');
-    const etag = `W/"grid-state-${lite.primitiveRevision}-${lite.latestTerminalMessageId}-${lite.latestChatMessageId}-${positionHash}"`;
+    const etag = `W/"grid-state-${lite.primitiveRevision}-${lite.latestEventId}-${positionHash}"`;
     if (request.headers['if-none-match'] === etag) {
       reply.header('ETag', etag);
       return reply.code(304).send();
@@ -3041,17 +3091,212 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     // Return only ONLINE agents (from WorldManager, not DB)
     const agents = agentsForEtag;
     const primitives = world.getWorldPrimitives();
-    const messages = await db.getTerminalMessages(STATE_MESSAGE_HISTORY_LIMIT);
-    const chatMessages = await db.getChatMessages(STATE_MESSAGE_HISTORY_LIMIT);
+    const events = await db.getRecentMessageEvents(STATE_MESSAGE_HISTORY_LIMIT);
 
     return {
       tick: world.getCurrentTick(),
       primitiveRevision: lite.primitiveRevision,
       agents,
       primitives,
-      messages,
-      chatMessages
+      events,
     };
+  });
+
+  // --- Build Context (Actionable build intelligence for agents) ---
+
+  let buildContextCache: { data: unknown; computedAt: number; revision: number; etag: string } | null = null;
+
+  fastify.get('/v1/grid/build-context', async (request, reply) => {
+    const { x: qx, z: qz } = request.query as { x?: string; z?: string };
+    const queryX = Number(qx);
+    const queryZ = Number(qz);
+
+    // Default to world center if no position given
+    const hasPosition = Number.isFinite(queryX) && Number.isFinite(queryZ);
+    const reqX = hasPosition ? queryX : 0;
+    const reqZ = hasPosition ? queryZ : 0;
+
+    const primitiveRevision = world.getPrimitiveRevision();
+    const cacheKey = `${primitiveRevision}-${Math.round(reqX)}-${Math.round(reqZ)}`;
+    const cachedEtag = `W/"build-ctx-${cacheKey}"`;
+
+    if (request.headers['if-none-match'] === cachedEtag) {
+      reply.header('ETag', cachedEtag);
+      return reply.code(304).send();
+    }
+
+    const primitives = world.getWorldPrimitives();
+    const primitiveInput = primitives as unknown as PrimitiveLike[];
+    const connectorPrimitives = primitiveInput.filter(isConnectorPrimitive);
+    const structures = buildStructureSummaries(primitiveInput);
+    const nodes = buildSettlementNodes(structures, connectorPrimitives);
+    const openAreas = computeOpenAreas(nodes, primitiveInput);
+
+    // Find nearest node to queried position
+    let nearestNode: (typeof nodes)[number] | null = null;
+    let nearestNodeDist = Infinity;
+    for (const node of nodes) {
+      const d = pointDistanceXZ({ x: reqX, z: reqZ }, node.center);
+      if (d < nearestNodeDist) {
+        nearestNodeDist = d;
+        nearestNode = node;
+      }
+    }
+
+    // Origin zone check
+    const originDist = Math.sqrt(reqX * reqX + reqZ * reqZ);
+    const insideOriginZone = originDist < BUILD_CREDIT_CONFIG.MIN_BUILD_DISTANCE_FROM_ORIGIN;
+
+    // Nearest structure distance from queried point
+    const nearestStructureDist = distanceToNearestPrimitive(reqX, reqZ, primitiveInput);
+
+    // Settlement proximity check
+    const withinSettlementProximity =
+      primitiveInput.length < BUILD_CREDIT_CONFIG.SETTLEMENT_PROXIMITY_THRESHOLD ||
+      nearestStructureDist <= BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT;
+
+    // Feasibility
+    const feasible = !insideOriginZone && withinSettlementProximity;
+
+    // Categories present and missing at nearest node
+    const ALL_CATEGORIES = ['architecture', 'infrastructure', 'technology', 'art', 'nature'];
+    let categoriesPresent: string[] = [];
+    let categoriesMissing: string[] = [...ALL_CATEGORIES];
+
+    if (nearestNode) {
+      const catSet = new Set<string>();
+      for (const s of structures) {
+        // Check if structure is within this node's radius
+        const d = pointDistanceXZ(s.center, nearestNode.center);
+        if (d <= nearestNode.radius + 20) {
+          catSet.add(s.category);
+        }
+      }
+      categoriesPresent = Array.from(catSet);
+      categoriesMissing = ALL_CATEGORIES.filter(c => !catSet.has(c));
+    }
+
+    // Filter safe build spots by proximity to queried position (within 200 units)
+    const MAX_SPOT_DISTANCE = 200;
+    const safeBuildSpots = openAreas
+      .map(area => ({
+        x: area.x,
+        z: area.z,
+        distToNearest: area.nearestBuild,
+        type: area.type,
+        distFromQuery: pointDistanceXZ({ x: area.x, z: area.z }, { x: reqX, z: reqZ }),
+      }))
+      .filter(s => s.distFromQuery <= MAX_SPOT_DISTANCE)
+      .sort((a, b) => a.distFromQuery - b.distFromQuery)
+      .slice(0, 8)
+      .map(({ distFromQuery, ...rest }) => rest);
+
+    // Generate recommendation (facts-only, not prescriptive)
+    let recommendation = '';
+    if (insideOriginZone) {
+      recommendation = `Too close to origin. Move at least ${BUILD_CREDIT_CONFIG.MIN_BUILD_DISTANCE_FROM_ORIGIN} units away.`;
+    } else if (!withinSettlementProximity) {
+      recommendation = `Too far from existing structures. Move within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units of a settlement.`;
+    } else if (nearestNode) {
+      const facts: string[] = [];
+      facts.push(`Nearest: "${nearestNode.name}" (${nearestNode.tier}, ${nearestNode.structureCount} structures)`);
+      if (categoriesPresent.length > 0) {
+        facts.push(`Present: ${categoriesPresent.join(', ')}`);
+      }
+      if (categoriesMissing.length > 0) {
+        facts.push(`Missing: ${categoriesMissing.join(', ')}`);
+      }
+      facts.push(`Safe spots: ${safeBuildSpots.length} available`);
+      recommendation = facts.join('. ') + '.';
+    } else if (primitiveInput.length === 0) {
+      recommendation = 'Empty world. No structures yet. Build anywhere outside the origin zone.';
+    } else {
+      recommendation = `No nearby settlement node. ${safeBuildSpots.length} safe spots available near existing structures.`;
+    }
+
+    // Build blueprintsByCategory from blueprints.json
+    let blueprintsByCategory: Record<string, string[]> = {};
+    try {
+      const bpFilePath = join(__dirname, '../blueprints.json');
+      const bpRaw = await readFile(bpFilePath, 'utf-8');
+      const bpParsed = JSON.parse(bpRaw) as Record<string, { category?: string }>;
+      for (const [name, bp] of Object.entries(bpParsed)) {
+        const cat = bp.category || 'other';
+        if (!blueprintsByCategory[cat]) blueprintsByCategory[cat] = [];
+        blueprintsByCategory[cat].push(name);
+      }
+    } catch { /* ok without blueprints */ }
+
+    // Compute node growth stage and guidance
+    type NodeGrowthStage = 'empty' | 'founding' | 'young' | 'established' | 'dense' | 'mega';
+    let nodeGrowthStage: NodeGrowthStage = 'empty';
+    let stageGuidance = '';
+    let structuresToNextTier = 0;
+
+    if (nearestNode) {
+      const sc = nearestNode.structureCount;
+      if (sc <= 4) {
+        nodeGrowthStage = 'founding';
+        structuresToNextTier = 5 - sc;
+        stageGuidance = `Founding node "${nearestNode.name}" (${sc} structures). Needs ${structuresToNextTier} more to reach server tier.${categoriesMissing.length > 0 ? ` Missing: ${categoriesMissing.join(', ')}.` : ''}`;
+      } else if (sc <= 24) {
+        nodeGrowthStage = 'young';
+        structuresToNextTier = 25 - sc;
+        stageGuidance = `Young node "${nearestNode.name}" (${sc}/25 to city tier). Densify to 25 before expanding.${categoriesMissing.length > 0 ? ` Missing: ${categoriesMissing.join(', ')}.` : ''}`;
+      } else if (sc <= 49) {
+        nodeGrowthStage = 'established';
+        structuresToNextTier = 50 - sc;
+        stageGuidance = `Established node "${nearestNode.name}" (${sc} structures, city tier). Can expand with connectors or found new district.`;
+      } else if (sc <= 99) {
+        nodeGrowthStage = 'dense';
+        structuresToNextTier = 100 - sc;
+        stageGuidance = `Dense node "${nearestNode.name}" (${sc} structures, metropolis). Ready for mega builds and cross-node infrastructure.`;
+      } else {
+        nodeGrowthStage = 'mega';
+        structuresToNextTier = 0;
+        stageGuidance = `Megaopolis "${nearestNode.name}" (${sc} structures). Expand outward, found satellite nodes, build monuments.`;
+      }
+    } else if (primitiveInput.length === 0) {
+      nodeGrowthStage = 'empty';
+      stageGuidance = 'Empty world. Found a new settlement by placing an anchor structure.';
+      structuresToNextTier = 1;
+    } else {
+      nodeGrowthStage = 'empty';
+      stageGuidance = 'No nearby node. Found a new settlement by placing an anchor structure, or move closer to an existing node.';
+      structuresToNextTier = 1;
+    }
+
+    const result = {
+      feasible,
+      nearestNode: nearestNode ? {
+        name: nearestNode.name,
+        tier: nearestNode.tier,
+        structures: nearestNode.structureCount,
+        radius: Math.round(nearestNode.radius),
+        distance: Math.round(nearestNodeDist),
+        center: {
+          x: Math.round(nearestNode.center.x),
+          z: Math.round(nearestNode.center.z),
+        },
+      } : null,
+      nodeGrowthStage,
+      stageGuidance,
+      structuresToNextTier,
+      categoriesPresent,
+      categoriesMissing,
+      safeBuildSpots,
+      constraints: {
+        insideOriginZone,
+        withinSettlementProximity,
+        nearestStructureDist: Math.round(nearestStructureDist),
+      },
+      recommendation,
+      blueprintsByCategory,
+    };
+
+    reply.header('ETag', cachedEtag);
+    reply.header('Cache-Control', 'public, max-age=10');
+    return result;
   });
 
   // --- Spatial Summary (World Map for Agents) ---

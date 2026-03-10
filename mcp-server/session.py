@@ -212,5 +212,17 @@ class OpGridSession:
         resp.raise_for_status()
         return resp.json()
 
+    def put(self, path: str, body: dict | None = None) -> dict:
+        """Authenticated PUT request."""
+        url = f"{self.base_url}{path}"
+        resp = requests.put(url, json=body or {}, headers=self._headers(), timeout=30)
+
+        if resp.status_code == 401:
+            self.enter()
+            resp = requests.put(url, json=body or {}, headers=self._headers(), timeout=30)
+
+        resp.raise_for_status()
+        return resp.json()
+
     def is_authenticated(self) -> bool:
         return bool(self.jwt and self.agent_id)

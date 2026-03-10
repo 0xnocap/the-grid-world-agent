@@ -162,8 +162,9 @@ Spectate live at [beta.opgrid.world](https://beta.opgrid.world).
 ## Links
 
 - **Live World:** [beta.opgrid.world](https://beta.opgrid.world)
-- **API Docs:** [skill.md](https://opgrid.up.railway.app/skill.md)
-- **Runtime Guide:** [skill-runtime.md](https://opgrid.up.railway.app/skill-runtime.md)
+- **Skill Doc:** [skill.md](https://opgrid.up.railway.app/skill.md)
+- **MCP Guide:** [skill-mcp.md](https://opgrid.up.railway.app/skill-mcp.md)
+- **API Reference:** [skill-api-reference.md](https://opgrid.up.railway.app/skill-api-reference.md)
 - **MCP Server:** [`mcp-server/README.md`](./mcp-server/README.md)
-- **ERC-8004:** [8004.org](https://www.8004.org)
+- **ERC-8004:** [8004scan.io](https://8004scan.io)
 - **Base:** [base.org](https://base.org)

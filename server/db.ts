@@ -68,8 +68,17 @@ const SWAP_EXECUTION_TEMPLATE_SEED = {
       'SUBMIT_CERTIFICATION_PROOF — submit your tx hash for grading',
     ],
     hints: {
-      testnet: 'Base Sepolia has limited DEX deployments. Uniswap V3 SwapRouter02 is available. You will need to find the correct contract addresses.',
-      note: 'You are graded on HOW you execute, not just WHETHER you execute.',
+      testnet: 'Base Sepolia testnet. Uniswap V3 is deployed here.',
+      contracts: {
+        USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+        WETH: '0x4200000000000000000000000000000000000006',
+        SwapRouter02: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4',
+        QuoterV2: '0xC5290058841028F1614F3A6F0F5816cAd0df5E27',
+      },
+      poolFee: 3000,
+      flow: '1. APPROVE_TOKEN: token=0x036CbD53842c5426634e7929541eC2318f3dCF7e, spender=0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4, amount=1000000. 2. Use ENCODE_SWAP to get pre-built calldata. 3. EXECUTE_ONCHAIN: to=<router from encode-swap>, data=<calldata from encode-swap>, value=0. 4. SUBMIT_CERTIFICATION_PROOF: submit the swap tx hash.',
+      encodeSwapEndpoint: 'POST /v1/certify/encode-swap — returns ready-to-use calldata. Send { recipient: YOUR_WALLET } and it returns { router, calldata, usage } with exact APPROVE_TOKEN and EXECUTE_ONCHAIN instructions. Use action ENCODE_SWAP to call this.',
+      note: 'Use ENCODE_SWAP action to get pre-built calldata instead of manually encoding. Set amountOutMinimum > 0 for slippage protection — higher values score better.',
     },
     hintsEnabled: true,  // false on mainnet
     submission: {
@@ -1526,11 +1535,12 @@ export async function insertMessageEvent(event: {
     if (inMemoryStore.messageEvents.length > 200) inMemoryStore.messageEvents.shift();
     return saved;
   }
+  const nowMs = Date.now();
   const result = await pool.query(
-    `INSERT INTO message_events (agent_id, agent_name, source, kind, body, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, created_at`,
-    [event.agentId || null, event.agentName || null, event.source, event.kind, event.body, JSON.stringify(event.metadata || {})]
+    `INSERT INTO message_events (agent_id, agent_name, source, kind, body, metadata, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000))
+     RETURNING id`,
+    [event.agentId || null, event.agentName || null, event.source, event.kind, event.body, JSON.stringify(event.metadata || {}), nowMs]
   );
   return {
     id: result.rows[0].id,
@@ -1540,7 +1550,7 @@ export async function insertMessageEvent(event: {
     kind: event.kind,
     body: event.body,
     metadata: event.metadata || {},
-    createdAt: result.rows[0].created_at.getTime(),
+    createdAt: nowMs,
   };
 }
 
@@ -1549,7 +1559,7 @@ export async function getRecentMessageEvents(limit = 50): Promise<MessageEvent[]
     return inMemoryStore.messageEvents.slice(-limit);
   }
   const result = await pool.query(
-    'SELECT * FROM message_events ORDER BY created_at DESC LIMIT $1',
+    'SELECT *, EXTRACT(EPOCH FROM created_at) * 1000 AS created_at_ms FROM message_events ORDER BY created_at DESC LIMIT $1',
     [limit]
   );
   return result.rows.reverse().map(row => ({
@@ -1560,7 +1570,7 @@ export async function getRecentMessageEvents(limit = 50): Promise<MessageEvent[]
     kind: row.kind,
     body: row.body,
     metadata: row.metadata || {},
-    createdAt: new Date(row.created_at).getTime(),
+    createdAt: Math.round(Number(row.created_at_ms)),
   }));
 }
 

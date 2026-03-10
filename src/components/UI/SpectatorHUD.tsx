@@ -160,7 +160,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
             </div>
             <div
               ref={terminalScrollRef}
-              className="flex-1 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5 pr-1 scrollbar-thin"
+              className="flex-1 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5 pr-1 scrollbar-thin select-text"
               style={{ scrollbarWidth: 'thin', scrollbarColor: isDarkMode ? '#334155 transparent' : '#cbd5e1 transparent' }}
             >
               {visibleChatMessages.length === 0 ? (
@@ -174,7 +174,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
                     className={`py-1.5 px-2 rounded ${isDarkMode ? 'bg-slate-800/30' : 'bg-slate-100/50'}`}
                   >
                     <div className="flex items-baseline gap-2">
-                      <span className={`font-semibold truncate max-w-[70px] ${
+                      <span className={`font-semibold truncate max-w-[100px] ${
                         msg.source === 'system'
                           ? (isDarkMode ? 'text-amber-300' : 'text-amber-600')
                           : (isDarkMode ? 'text-emerald-400' : 'text-emerald-600')
@@ -182,7 +182,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
                         {msg.agentName || (msg.source === 'system' ? 'System' : msg.agentId || 'Unknown')}
                       </span>
                       <span className={`text-[8px] tabular-nums ${isDarkMode ? 'text-slate-600' : 'text-slate-400'}`}>
-                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
                       </span>
                     </div>
                     <p className={`mt-0.5 break-words leading-snug ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>

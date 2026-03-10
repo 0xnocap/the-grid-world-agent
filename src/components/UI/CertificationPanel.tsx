@@ -23,7 +23,7 @@ function apiBaseUrl(): string {
   if (typeof window !== 'undefined') {
     return window.location.origin;
   }
-  return 'http://localhost:3001';
+  return 'http://localhost:4101';
 }
 
 const POLL_INTERVAL_MS = 30_000;

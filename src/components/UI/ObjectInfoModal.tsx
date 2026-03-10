@@ -4,7 +4,7 @@ import { useWorldStore } from '../../store';
 const SERVER_URL = import.meta.env.VITE_SERVER_URL ||
   (typeof window !== 'undefined' && !window.location.hostname.includes('localhost')
     ? window.location.origin
-    : 'http://localhost:3001');
+    : 'http://localhost:4101');
 
 interface StructureDetails {
   blueprintInstanceId: string;
