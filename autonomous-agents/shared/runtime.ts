@@ -486,7 +486,7 @@ const ACTION_FORMAT = [
   '',
   '**BUILD ZONE RULE:** You MUST NOT build within 50 units of origin (0,0).',
   '**BUILD DISTANCE RULE:** You must be within 20 units of target coordinates to build. MOVE first, THEN build.',
-  '**EFFICIENCY:** Use BUILD_BLUEPRINT for catalog structures. Use BUILD_MULTI for custom shapes (up to 5 per tick).',
+  '**EFFICIENCY:** Use BUILD_BLUEPRINT for BIG structures (15-50 prims). Use BUILD_MULTI ONLY for small custom art (max 5 prims/tick). BUILD_BLUEPRINT + BUILD_CONTINUE is how you build big.',
   'You can build any time you have credits. Directives are ONLY for organizing group projects.',
   '**BUILD CONTEXT:** The BUILD CONTEXT section in your tick prompt is auto-fetched for your current position. Use the safe spots listed there.',
   '**ANTI-LOOP:** If your last 3+ actions were the same type AND failed, switch to something completely different. Move to new coordinates, try a different action, or IDLE.',
@@ -612,6 +612,20 @@ function buildTickPrompt(
   }
   sections.push('');
 
+  // Blueprint catalog — EARLY in prompt so LLMs actually read it
+  if (blueprintCatalog) {
+    sections.push('# BLUEPRINT CATALOG');
+    sections.push(blueprintCatalog);
+    sections.push('');
+  }
+
+  // Build context hint — right after catalog
+  if (buildContextHint) {
+    sections.push('# BUILD CONTEXT (near your position)');
+    sections.push(buildContextHint);
+    sections.push('');
+  }
+
   // Agent chat (direct conversation between agents)
   const chatMsgs = recentMessages.filter(m => (m as any).kind === 'chat');
   if (chatMsgs.length > 0) {
@@ -711,20 +725,6 @@ function buildTickPrompt(
     } else if (usdcNum < 2) {
       sections.push(`⚠️ LOW USDC and no WETH to swap back. Cannot pay certification fees.`);
     }
-    sections.push('');
-  }
-
-  // Blueprint catalog
-  if (blueprintCatalog) {
-    sections.push('# BLUEPRINT CATALOG');
-    sections.push(blueprintCatalog);
-    sections.push('');
-  }
-
-  // Build context hint
-  if (buildContextHint) {
-    sections.push('# BUILD CONTEXT (near your position)');
-    sections.push(buildContextHint);
     sections.push('');
   }
 
@@ -1313,18 +1313,15 @@ export async function startAgent(config: AgentConfig): Promise<void> {
           entries.sort(([, a]: [string, any], [, b]: [string, any]) =>
             (diffOrder[(a as any).difficulty] ?? 3) - (diffOrder[(b as any).difficulty] ?? 3)
           );
-          // Filter out small blueprints from catalog - only show 15+ prim blueprints
-          entries = entries.filter(([, bp]: [string, any]) => (bp.totalPrimitives || 0) >= 12);
+          // Only show 15+ prim blueprints
+          entries = entries.filter(([, bp]: [string, any]) => (bp.totalPrimitives || 0) >= 15);
           cachedBlueprintCatalog = [
-            '## SETTLEMENT BUILDING STRATEGY',
-            '⚡ MANDATORY: ONLY build blueprints with 15+ primitives. Your FIRST build at any node MUST be 25+ prims.',
-            '🏆 PRIORITY ORDER: MEGA_CITADEL(50) > MEGA_SKYSCRAPER(46) > COLOSSEUM(45) > CATHEDRAL(44) > OBELISK_TOWER(41) > SKYSCRAPER(38) > TITAN_STATUE(30) > MEGA_SERVER_SPIRE(25) > HIGH_RISE(25) > MANSION(15).',
-            '🚫 BANNED as primary builds: SMALL_HOUSE, TREE, LAMP_POST, ROAD_SEGMENT, FOUNTAIN, SERVER_RACK, GARDEN, SHOP, BENCH. These are TINY and make settlements look empty.',
-            '📍 DENSIFY: Build within 15-25 units of node center. 25+ structures = city, 50+ = metropolis.',
-            '🎯 Use safe build spots from BUILD CONTEXT below.',
-            '',
+            '## ⚠️ BLUEPRINT CATALOG — USE THESE EXACT NAMES ⚠️',
+            '❌ DO NOT invent blueprint names. DO NOT guess. ONLY use names from this list.',
+            '❌ Names like POWER_STATION, NETWORK_HUB, ART_INSTALLATION, CRYSTAL_GARDEN DO NOT EXIST.',
+            '✅ VALID NAMES (copy exactly):',
             ...entries.map(([name, bp]: [string, any]) => {
-              const parts = [`  ${name}: ${bp.category || '?'} (${bp.totalPrimitives || '?'} prims, ${bp.difficulty || '?'})`];
+              const parts = [`  → ${name}: ${bp.category || '?'} (${bp.totalPrimitives || '?'} prims, ${bp.difficulty || '?'})`];
               if (bp.materialCost && typeof bp.materialCost === 'object') {
                 const costs = Object.entries(bp.materialCost).map(([k, v]) => `${k}:${v}`).join(', ');
                 parts.push(`[costs: ${costs}]`);
@@ -1334,6 +1331,11 @@ export async function startAgent(config: AgentConfig): Promise<void> {
               if (bp.minNodeTier) parts.push(`[requires: ${bp.minNodeTier}]`);
               return parts.join(' ');
             }),
+            '',
+            '🏆 BUILD BIG: MEGA_CITADEL(50) > MEGA_SKYSCRAPER(46) > COLOSSEUM(45) > CATHEDRAL(44) > OBELISK_TOWER(41) > SKYSCRAPER(38) > TITAN_STATUE(30) > MEGA_SERVER_SPIRE(25) > HIGH_RISE(25) > MANSION(15).',
+            '📍 DENSIFY: Build within 15-25 units of node center.',
+            '🎯 Use BUILD_BLUEPRINT with the EXACT name from this list. Then BUILD_CONTINUE to place pieces.',
+            '⚡ BUILD_MULTI is for custom art ONLY (max 5 prims/tick). For big structures, ALWAYS use BUILD_BLUEPRINT.',
           ].join('\n');
           blueprintCacheTick = tickCount;
         } catch { /* keep cached */ }
