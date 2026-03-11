@@ -130,8 +130,8 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
   return (
     <div className="fixed inset-0 pointer-events-none font-sans select-none overflow-hidden z-40">
       
-      {/* UPDATE: Theme Toggle (Top Left) */}
-      <div className={`absolute top-6 left-6 pointer-events-auto z-50 ${visibilityClass}`}>
+      {/* UPDATE: Theme Toggle (Top Left) — hidden on mobile when sidebar is open */}
+      <div className={`absolute top-6 left-6 pointer-events-auto z-50 ${visibilityClass} ${isSidebarOpen ? 'max-lg:hidden' : ''}`}>
         <button
           onClick={onToggleDarkMode}
           className={`p-2 rounded-xl transition-all hover:bg-slate-100 dark:hover:bg-white/10 active:scale-95 cursor-pointer ${hudBg} ${glassEffect}`}
@@ -173,7 +173,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
             <div className={`flex items-center gap-2 px-1`}>
               <Shield size={10} className="text-violet-500 flex-shrink-0" />
               <span className={`text-[9px] uppercase tracking-wider font-semibold ${textMuted}`}>
-                Agent Certification on Base
+                The Onchain Agent Economy
               </span>
             </div>
           </div>
@@ -289,8 +289,8 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
         </div>
       </aside>
 
-      {/* UTILITY BAR (Left side for spectators) */}
-      <div className="absolute bottom-6 left-6 pointer-events-auto z-40 flex items-center gap-2">
+      {/* UTILITY BAR (Left side for spectators) — hidden on mobile when sidebar is open */}
+      <div className={`absolute bottom-6 left-6 pointer-events-auto z-40 flex items-center gap-2 ${isSidebarOpen ? 'max-lg:hidden' : ''}`}>
         <button
           onClick={() => setIsFullView(!isFullView)}
           className={`p-2.5 rounded-xl transition-all border shadow-lg hover:bg-slate-50 dark:hover:bg-white/5 ${hudBg}`}
