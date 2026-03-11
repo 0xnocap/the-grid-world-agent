@@ -2,260 +2,182 @@ import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
-import { readFile, access } from 'fs/promises';
-import { join, dirname } from 'path';
+import { access, readFile, stat } from 'fs/promises';
+import { join, dirname, resolve, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { constants } from 'fs';
-import { initDatabase, closeDatabase } from './db.js';
-import { initWorldManager, getWorldManager } from './world.js';
+import { initWorkspaceManager, getWorkspaceManager } from './workspace.js';
 import { setupSocketServer } from './socket.js';
 import { registerAgentRoutes } from './api/agents.js';
-import { registerSimulateRoutes } from './api/simulate.js';
-import { registerReputationRoutes } from './api/reputation.js';
-import { registerGridRoutes } from './api/grid.js';
-import { registerCertificationRoutes } from './api/certify.js';
-import { initChain } from './chain.js';
+import { registerZoneRoutes } from './api/zones.js';
+import { registerTaskRoutes } from './api/tasks.js';
+import { scanWorkspace, watchWorkspace } from './watcher.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || '4101', 10);
-const HOST = process.env.HOST || '0.0.0.0';
-const API_MAINTENANCE_MODE = false;
-const API_MAINTENANCE_MESSAGE = 'opgrid is under maintainence.';
 
-const API_LOCKED_PREFIXES = ['/v1/', '/api/', '/socket.io/'];
-const API_LOCKED_PATHS = new Set(['/health', '/skill.md', '/skill-runtime.md']);
+// Resolve workspace path: CLI arg > env var > cwd
+// Usage: npx tsx server/index.ts /absolute/path/to/workspace
+function resolveWorkspacePath(): string {
+  const cliArg = process.argv[2];
+  const envPath = process.env.WORKSPACE_PATH;
+  const raw = cliArg || envPath || process.cwd();
+
+  // Resolve to absolute
+  const resolved = isAbsolute(raw) ? raw : resolve(raw);
+  return resolved;
+}
+
+const WORKSPACE_PATH = resolveWorkspacePath();
 
 async function main() {
-  console.log('[Server] Starting OpGrid Backend...');
+  console.log('[Server] Starting OpGrid Workspace...');
 
-  if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET is required. Refusing to start without authentication secret.');
+  // Validate workspace path exists and is a directory
+  try {
+    const stats = await stat(WORKSPACE_PATH);
+    if (!stats.isDirectory()) {
+      console.error(`[Server] Error: ${WORKSPACE_PATH} is not a directory`);
+      process.exit(1);
+    }
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      console.error(`[Server] Error: workspace path does not exist: ${WORKSPACE_PATH}`);
+    } else {
+      console.error(`[Server] Error: cannot access workspace path: ${WORKSPACE_PATH}`, err.message);
+    }
+    process.exit(1);
   }
 
-  // Initialize Fastify with server factory for Socket.io compatibility
-  const isProduction = process.env.NODE_ENV === 'production';
   const fastify = Fastify({
-    logger: isProduction
-      ? { level: 'info' }
-      : {
-          level: 'info',
-          transport: {
-            target: 'pino-pretty',
-            options: { colorize: true }
-          }
-        }
+    logger: {
+      level: 'info',
+      transport: {
+        target: 'pino-pretty',
+        options: { colorize: true },
+      },
+    },
   });
 
-  // Register CORS
-  const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:4100',
-    'http://127.0.0.1:5173',
-    process.env.FRONTEND_URL,
-    'https://opgrid.world',
-    'https://www.opgrid.world'
-  ].filter(Boolean) as string[];
-
+  // CORS for local dev
   await fastify.register(cors, {
-    origin: allowedOrigins,
+    origin: [
+      'http://localhost:5173',
+      'http://localhost:4100',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:4100',
+    ],
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   });
 
-  if (API_MAINTENANCE_MODE) {
-    fastify.addHook('onRequest', async (request, reply) => {
-      const path = request.url.split('?')[0];
-      const isApiPath =
-        API_LOCKED_PATHS.has(path) ||
-        API_LOCKED_PREFIXES.some((prefix) => path.startsWith(prefix));
-
-      if (!isApiPath) return;
-
-      return reply
-        .code(503)
-        .header('Retry-After', '3600')
-        .send({ error: API_MAINTENANCE_MESSAGE });
-    });
-  }
-
-  // Health check endpoint
+  // Health check
   fastify.get('/health', async () => {
-    const world = getWorldManager();
+    const workspace = getWorkspaceManager();
     return {
       status: 'ok',
-      tick: world.getCurrentTick(),
-      agents: world.getAgents().length,
-      timestamp: Date.now()
+      agents: workspace.getAgents().length,
+      zones: workspace.getZones().length,
+      tick: workspace.getCurrentTick(),
+      timestamp: Date.now(),
     };
   });
 
-  // Serve skill.md — the onboarding document all agents fetch on startup
-  const skillMdPath = join(__dirname, '..', 'public', 'skill.md');
-  fastify.get('/skill.md', async (request, reply) => {
-    try {
-      const content = await readFile(skillMdPath, 'utf-8');
-      return reply.type('text/markdown').send(content);
-    } catch (err) {
-      request.log.error(err);
-      return reply.status(500).send('skill.md not found');
-    }
+  // Workspace info — returns the watched path + stats
+  fastify.get('/api/workspace', async () => {
+    const workspace = getWorkspaceManager();
+    return {
+      path: WORKSPACE_PATH,
+      agents: workspace.getAgents().length,
+      zones: workspace.getZones().length,
+      tasks: workspace.getTasks().length,
+      tick: workspace.getCurrentTick(),
+    };
   });
 
-  // Serve skill-mcp.md — MCP server setup and certification workflow
-  const skillMcpPath = join(__dirname, '..', 'public', 'skill-mcp.md');
-  fastify.get('/skill-mcp.md', async (request, reply) => {
-    try {
-      const content = await readFile(skillMcpPath, 'utf-8');
-      return reply.type('text/markdown').send(content);
-    } catch (err) {
-      request.log.error(err);
-      return reply.status(500).send('skill-mcp.md not found');
+  // Rescan workspace — re-detect projects without restarting
+  fastify.post('/api/rescan', async () => {
+    const workspace = getWorkspaceManager();
+    // Clear existing zones from scanner (keep manually created ones)
+    const existingZones = workspace.getZones();
+    for (const zone of existingZones) {
+      // Only remove auto-detected zones (those with a path)
+      if (zone.path) {
+        workspace.removeZone(zone.id);
+      }
     }
-  });
-
-  // Serve skill-x402.md — x402 USDC payment signing reference
-  const skillX402Path = join(__dirname, '..', 'public', 'skill-x402.md');
-  fastify.get('/skill-x402.md', async (request, reply) => {
-    try {
-      const content = await readFile(skillX402Path, 'utf-8');
-      return reply.type('text/markdown').send(content);
-    } catch (err) {
-      request.log.error(err);
-      return reply.status(500).send('skill-x402.md not found');
-    }
-  });
-
-  // Serve skill-api-reference.md — endpoint-by-endpoint auth/payload/response notes
-  const skillApiRefPath = join(__dirname, '..', 'public', 'skill-api-reference.md');
-  fastify.get('/skill-api-reference.md', async (request, reply) => {
-    try {
-      const content = await readFile(skillApiRefPath, 'utf-8');
-      return reply.type('text/markdown').send(content);
-    } catch (err) {
-      request.log.error(err);
-      return reply.status(500).send('skill-api-reference.md not found');
-    }
-  });
-
-  // Serve skill-building.md — building logic, node founding, settlement growth
-  const skillBuildingPath = join(__dirname, '..', 'public', 'skill-building.md');
-  fastify.get('/skill-building.md', async (request, reply) => {
-    try {
-      const content = await readFile(skillBuildingPath, 'utf-8');
-      return reply.type('text/markdown').send(content);
-    } catch (err) {
-      request.log.error(err);
-      return reply.status(500).send('skill-building.md not found');
-    }
-  });
-
-  // Serve skill-troubleshooting.md — common failures and concrete fixes
-  const skillTroubleshootingPath = join(__dirname, '..', 'public', 'skill-troubleshooting.md');
-  fastify.get('/skill-troubleshooting.md', async (request, reply) => {
-    try {
-      const content = await readFile(skillTroubleshootingPath, 'utf-8');
-      return reply.type('text/markdown').send(content);
-    } catch (err) {
-      request.log.error(err);
-      return reply.status(500).send('skill-troubleshooting.md not found');
-    }
+    await scanWorkspace(WORKSPACE_PATH);
+    return {
+      status: 'ok',
+      zones: workspace.getZones().length,
+      path: WORKSPACE_PATH,
+    };
   });
 
   // Register API routes
   await registerAgentRoutes(fastify);
-  await registerSimulateRoutes(fastify);
-  await registerReputationRoutes(fastify);
-  await registerGridRoutes(fastify);
-  await registerCertificationRoutes(fastify);
+  await registerZoneRoutes(fastify);
+  await registerTaskRoutes(fastify);
 
-  // Serve static frontend in production (built files in ../dist)
+  // Serve static frontend in production
   const distPath = join(__dirname, '..', 'dist');
-
   try {
     await access(distPath, constants.R_OK);
-
-    // Serve static assets
     await fastify.register(fastifyStatic, {
       root: distPath,
       prefix: '/',
-      decorateReply: false
+      decorateReply: false,
     });
 
-    // SPA fallback: serve index.html for non-API routes
     fastify.setNotFoundHandler(async (request, reply) => {
-      // Don't intercept API routes
-      if (request.url.startsWith('/v1/') || request.url.startsWith('/api/')) {
+      if (request.url.startsWith('/api/')) {
         return reply.code(404).send({ error: 'Not found' });
       }
-      // Serve index.html for SPA routing
-      const indexPath = join(distPath, 'index.html');
-      const html = await readFile(indexPath, 'utf-8');
+      const html = await readFile(join(distPath, 'index.html'), 'utf-8');
       return reply.type('text/html').send(html);
     });
-
     console.log('[Server] Serving static frontend from dist/');
   } catch {
-    if (isProduction) {
-      console.warn('[Server] Warning: dist/ not found. Run `npm run build` first.');
-    }
+    // No dist — dev mode, frontend served by vite
   }
 
-  // Initialize database
-  await initDatabase();
+  // Initialize workspace manager (in-memory, no DB)
+  const workspace = initWorkspaceManager();
 
-  // Initialize world manager
-  const world = await initWorldManager();
-
-  // Start Fastify first
+  // Start HTTP server
   await fastify.listen({ port: PORT, host: '::' });
 
-  // Now attach Socket.io to the running server
+  // Attach Socket.io
   const io = setupSocketServer(fastify.server);
 
-  // Initialize on-chain connections (read-only)
-  initChain();
+  // Start tick loop
+  workspace.start();
 
-  // Start the world simulation
-  world.start();
+  // Scan workspace for projects
+  await scanWorkspace(WORKSPACE_PATH);
 
+  // Watch for file changes (non-blocking)
+  watchWorkspace(WORKSPACE_PATH).catch((err) => {
+    console.warn('[Server] Filesystem watching unavailable:', err.message);
+  });
 
-
-  console.log(`[Server] HTTP server running at http://${HOST}:${PORT}`);
-  console.log(`[Server] WebSocket server ready`);
-
-  console.log(`[Server] API endpoints:`);
-  console.log(`  - GET  /health`);
-  console.log(`  - POST /v1/agents/enter`);
-  console.log(`  - POST /v1/agents/action`);
-  console.log(`  - GET  /v1/world/state`);
-  console.log(`  - GET  /v1/agents/:id`);
-  console.log(`  - DELETE /v1/agents/:id`);
-  console.log(`  - POST /api/simulate`);
-  console.log(`  - POST /v1/reputation/feedback`);
-  console.log(`  - GET  /v1/reputation/:agentId`);
-  console.log(`  - GET  /v1/reputation/:agentId/feedback`);
-  console.log(`  - POST /v1/reputation/:feedbackId/revoke`);
-  console.log(`  - POST /v1/grid/plot`);
-  console.log(`  - POST /v1/grid/terminal`);
-  console.log(`  - GET  /v1/grid/state-lite`);
-  console.log(`  - GET  /v1/grid/state`);
-  console.log(`  - GET  /v1/certify/templates`);
-  console.log(`  - POST /v1/certify/start`);
-  console.log(`  - GET  /v1/certify/runs`);
-  console.log(`  - POST /v1/certify/runs/:runId/submit`);
-  console.log(`  - GET  /v1/certify/runs/:runId/attestation`);
-  console.log(`  - GET  /v1/certify/leaderboard`);
+  console.log('');
+  console.log('  ┌──────────────────────────────────────────────┐');
+  console.log('  │            OpGrid Workspace                  │');
+  console.log('  └──────────────────────────────────────────────┘');
+  console.log(`  → Server:    http://localhost:${PORT}`);
+  console.log(`  → Workspace: ${WORKSPACE_PATH}`);
+  console.log(`  → Zones:     ${workspace.getZones().length} projects detected`);
+  console.log(`  → API:       /api/agents, /api/zones, /api/tasks, /api/workspace`);
+  console.log('');
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`\n[Server] Received ${signal}, shutting down...`);
-
-    world.stop();
-    await world.syncToDatabase();
+    workspace.stop();
     io.close();
-    await closeDatabase();
     await fastify.close();
     process.exit(0);
   };

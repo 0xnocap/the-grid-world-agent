@@ -1,207 +1,125 @@
 import { create } from 'zustand';
-import { Agent, WorldState, WorldMessage, WorldPrimitive, MessageEvent, Guild, Directive, DirectMessage } from './types';
+import type { WorkspaceAgent, ProjectZone, WorkspaceTask } from './types';
 
-interface WorldStore extends WorldState {
-  // State
-  messages: WorldMessage[];
-  balance: string;
-  hasEntered: boolean;
-  isSimulating: boolean;
-  playerId: string | null;
-  walletAddress: string | null;
-  followAgentId: string | null;
-  lastFollowAgentId: string | null;
-  
-  // Grid State
-  worldPrimitives: WorldPrimitive[];
-  primitiveRevision: number;
-  messageEvents: MessageEvent[];
-  guilds: Guild[];
-  directives: Directive[];
-  selectedPrimitive: WorldPrimitive | null;
-  terminalOpen: boolean;
-  snapshotLoaded: boolean;
-  isAgentOwner: boolean;
-  ownedAgentId: string | null;
-  dmMessages: DirectMessage[];
-
-  // Actions
-  setAgents: (agents: Agent[]) => void;
-  addAgent: (agent: Agent) => void;
+interface WorkspaceStore {
+  agents: WorkspaceAgent[];
+  setAgents: (agents: WorkspaceAgent[]) => void;
+  addAgent: (agent: WorkspaceAgent) => void;
   removeAgent: (id: string) => void;
-  updateAgent: (id: string, updates: Partial<Agent>) => void;
-  batchUpdateAgents: (updates: Array<{ id: string; changes: Partial<Agent> }>) => void;
-  addEvent: (event: string) => void;
-  addMessage: (message: WorldMessage) => void;
-  setBalance: (balance: string) => void;
-  setHasEntered: (hasEntered: boolean) => void;
-  setIsSimulating: (isSimulating: boolean) => void;
-  setPlayerId: (playerId: string | null) => void;
-  setWalletAddress: (walletAddress: string | null) => void;
-  setOwnership: (isAgentOwner: boolean, ownedAgentId: string | null) => void;
+  updateAgent: (id: string, updates: Partial<WorkspaceAgent>) => void;
+  batchUpdateAgents: (updates: Array<{ id: string; changes: Partial<WorkspaceAgent> }>) => void;
+
+  zones: ProjectZone[];
+  setZones: (zones: ProjectZone[]) => void;
+  updateZone: (zone: ProjectZone) => void;
+  removeZone: (id: string) => void;
+
+  tasks: WorkspaceTask[];
+  setTasks: (tasks: WorkspaceTask[]) => void;
+
+  selectedAgentIds: string[];
+  setSelectedAgentIds: (ids: string[]) => void;
+  toggleAgentSelection: (id: string) => void;
+  clearSelection: () => void;
+  selectionBox: { startX: number; startY: number; endX: number; endY: number } | null;
+  setSelectionBox: (box: WorkspaceStore['selectionBox']) => void;
+
+  hoveredAgentId: string | null;
+  setHoveredAgentId: (id: string | null) => void;
+  hoveredZoneId: string | null;
+  setHoveredZoneId: (id: string | null) => void;
+
+  cameraMode: 'free' | 'follow' | 'overview';
+  setCameraMode: (mode: WorkspaceStore['cameraMode']) => void;
+  followAgentId: string | null;
   setFollowAgentId: (id: string | null) => void;
-  setLastFollowAgentId: (id: string | null) => void;
-  updateWorldState: (updates: Partial<WorldState>) => void;
-  // Grid Actions
-  setWorldPrimitives: (primitives: WorldPrimitive[]) => void;
-  setPrimitiveRevision: (revision: number) => void;
-  addWorldPrimitive: (primitive: WorldPrimitive) => void;
-  removeWorldPrimitive: (id: string) => void;
-  setMessageEvents: (events: MessageEvent[]) => void;
-  addMessageEvent: (event: MessageEvent) => void;
-  setGuilds: (guilds: Guild[]) => void;
-  setDirectives: (directives: Directive[]) => void;
-  setDMMessages: (messages: DirectMessage[]) => void;
-  addDMMessage: (message: DirectMessage) => void;
-  setSelectedPrimitive: (primitive: WorldPrimitive | null) => void;
+
+  inspectorPanel: 'agent' | 'zone' | 'task' | null;
+  inspectorTargetId: string | null;
+  openInspector: (panel: 'agent' | 'zone' | 'task', targetId: string) => void;
+  closeInspector: () => void;
+  showMinimap: boolean;
+  toggleMinimap: () => void;
+  showCommandBar: boolean;
+  toggleCommandBar: () => void;
+
+  workspacePath: string | null;
+  setWorkspacePath: (path: string) => void;
+
+  snapshotLoaded: boolean;
   setSnapshotLoaded: (loaded: boolean) => void;
-  toggleTerminal: () => void;
   reset: () => void;
 }
 
 const initialState = {
-  agents: [],
-  events: ["World simulation initialized.", "Waiting for agents..."],
-  lastUpdate: Date.now(),
-  messages: [
-    { sender: 'System', content: 'Welcome to OpGrid. Click anywhere to move your agent!', timestamp: Date.now() }
-  ],
-  balance: '0.00',
-  hasEntered: false,
-  isSimulating: false,
-  playerId: null,
-  movieId: null,
-  walletAddress: null,
-  followAgentId: null,
-  lastFollowAgentId: null,
-  worldPrimitives: [],
-  primitiveRevision: 0,
-  messageEvents: [],
-  guilds: [],
-  directives: [],
-  selectedPrimitive: null,
-  terminalOpen: false,
+  agents: [] as WorkspaceAgent[],
+  zones: [] as ProjectZone[],
+  tasks: [] as WorkspaceTask[],
+  selectedAgentIds: [] as string[],
+  selectionBox: null as WorkspaceStore['selectionBox'],
+  hoveredAgentId: null as string | null,
+  hoveredZoneId: null as string | null,
+  cameraMode: 'free' as const,
+  followAgentId: null as string | null,
+  inspectorPanel: null as WorkspaceStore['inspectorPanel'],
+  inspectorTargetId: null as string | null,
+  showMinimap: true,
+  showCommandBar: true,
+  workspacePath: null as string | null,
   snapshotLoaded: false,
-  isAgentOwner: false,
-  ownedAgentId: null,
-  dmMessages: [],
 };
 
-const MAX_EVENTS = 300;
-const MAX_DM_MESSAGES = 200;
-
-export const useWorldStore = create<WorldStore>((set) => ({
-  // Initial state
+export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   ...initialState,
 
-  // Actions
   setAgents: (agents) => set({ agents }),
+  addAgent: (agent) =>
+    set((s) => ({
+      agents: s.agents.some((a) => a.id === agent.id) ? s.agents : [...s.agents, agent],
+    })),
+  removeAgent: (id) =>
+    set((s) => ({
+      agents: s.agents.filter((a) => a.id !== id),
+      selectedAgentIds: s.selectedAgentIds.filter((sid) => sid !== id),
+    })),
+  updateAgent: (id, updates) =>
+    set((s) => ({
+      agents: s.agents.map((a) => (a.id === id ? { ...a, ...updates } : a)),
+    })),
+  batchUpdateAgents: (updates) =>
+    set((s) => {
+      const map = new Map(updates.map((u) => [u.id, u.changes]));
+      return { agents: s.agents.map((a) => { const c = map.get(a.id); return c ? { ...a, ...c } : a; }) };
+    }),
 
-  addAgent: (agent) => set((state) => ({
-    agents: state.agents.some(a => a.id === agent.id)
-      ? state.agents // Already exists, don't duplicate
-      : [...state.agents, agent]
-  })),
+  setZones: (zones) => set({ zones }),
+  updateZone: (zone) => set((s) => ({ zones: s.zones.map((z) => (z.id === zone.id ? zone : z)) })),
+  removeZone: (id) => set((s) => ({ zones: s.zones.filter((z) => z.id !== id) })),
 
-  removeAgent: (id) => set((state) => ({
-    agents: state.agents.filter(a => a.id !== id)
-  })),
+  setTasks: (tasks) => set({ tasks }),
 
-  updateAgent: (id, updates) => set((state) => ({
-    agents: state.agents.map(agent =>
-      agent.id === id ? { ...agent, ...updates } : agent
-    )
-  })),
+  setSelectedAgentIds: (ids) => set({ selectedAgentIds: ids }),
+  toggleAgentSelection: (id) =>
+    set((s) => ({
+      selectedAgentIds: s.selectedAgentIds.includes(id)
+        ? s.selectedAgentIds.filter((sid) => sid !== id)
+        : [...s.selectedAgentIds, id],
+    })),
+  clearSelection: () => set({ selectedAgentIds: [] }),
+  setSelectionBox: (box) => set({ selectionBox: box }),
 
-  batchUpdateAgents: (updates) => set((state) => {
-    const updateMap = new Map(updates.map(u => [u.id, u.changes]));
-    return {
-      agents: state.agents.map(agent => {
-        const changes = updateMap.get(agent.id);
-        return changes ? { ...agent, ...changes } : agent;
-      })
-    };
-  }),
+  setHoveredAgentId: (id) => set({ hoveredAgentId: id }),
+  setHoveredZoneId: (id) => set({ hoveredZoneId: id }),
 
-  addEvent: (event) => set((state) => ({
-    events: [...state.events.slice(-10), event],
-    lastUpdate: Date.now()
-  })),
+  setCameraMode: (mode) => set({ cameraMode: mode }),
+  setFollowAgentId: (id) => set({ followAgentId: id }),
 
-  addMessage: (message) => set((state) => ({
-    messages: [...state.messages, message]
-  })),
+  openInspector: (panel, targetId) => set({ inspectorPanel: panel, inspectorTargetId: targetId }),
+  closeInspector: () => set({ inspectorPanel: null, inspectorTargetId: null }),
+  toggleMinimap: () => set((s) => ({ showMinimap: !s.showMinimap })),
+  toggleCommandBar: () => set((s) => ({ showCommandBar: !s.showCommandBar })),
 
-  setBalance: (balance) => set({ balance }),
-
-  setHasEntered: (hasEntered) => set({ hasEntered }),
-
-  setIsSimulating: (isSimulating) => set({ isSimulating }),
-
-  setPlayerId: (playerId) => set({ playerId }),
-
-  setWalletAddress: (walletAddress) => set({ walletAddress }),
-
-  setOwnership: (isAgentOwner, ownedAgentId) => set({ isAgentOwner, ownedAgentId }),
-
-  setFollowAgentId: (followAgentId) => set({ followAgentId }),
-
-  setLastFollowAgentId: (lastFollowAgentId) => set({ lastFollowAgentId }),
-
-  updateWorldState: (updates) => set((state) => ({
-    ...state,
-    ...updates,
-    lastUpdate: Date.now()
-  })),
-
-  reset: () => set({
-    ...initialState,
-    events: ["World simulation initialized.", "Waiting for agents..."],
-    followAgentId: null,
-    lastFollowAgentId: null,
-    messages: [
-      { sender: 'System', content: 'Welcome to OpGrid. Click anywhere to move your agent!', timestamp: Date.now() }
-    ],
-    lastUpdate: Date.now(),
-  }),
-  
-  setWorldPrimitives: (worldPrimitives) => set({ worldPrimitives }),
-
-  setPrimitiveRevision: (primitiveRevision) => set({ primitiveRevision }),
-
-  addWorldPrimitive: (primitive) => set((state) => ({
-    worldPrimitives: [...state.worldPrimitives, primitive]
-  })),
-
-  removeWorldPrimitive: (id) => set((state) => ({
-    worldPrimitives: state.worldPrimitives.filter(prim => prim.id !== id)
-  })),
-  
-  setMessageEvents: (messageEvents) => set({
-    messageEvents: messageEvents.slice(-MAX_EVENTS)
-  }),
-
-  addMessageEvent: (event) => set((state) => ({
-    messageEvents: [...state.messageEvents, event].slice(-MAX_EVENTS)
-  })),
-  
-  setGuilds: (guilds) => set({ guilds }),
-  
-  setDirectives: (directives) => set({ directives }),
-
-  setDMMessages: (dmMessages) => set({
-    dmMessages: dmMessages.slice(0, MAX_DM_MESSAGES)
-  }),
-
-  addDMMessage: (message) => set((state) => ({
-    dmMessages: [message, ...state.dmMessages.filter((m) => m.id !== message.id)]
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, MAX_DM_MESSAGES)
-  })),
-  
-  setSelectedPrimitive: (selectedPrimitive) => set({ selectedPrimitive }),
-
-  setSnapshotLoaded: (snapshotLoaded) => set({ snapshotLoaded }),
-
-  toggleTerminal: () => set((state) => ({ terminalOpen: !state.terminalOpen })),
+  setWorkspacePath: (path) => set({ workspacePath: path }),
+  setSnapshotLoaded: (loaded) => set({ snapshotLoaded: loaded }),
+  reset: () => set(initialState),
 }));

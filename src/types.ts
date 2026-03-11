@@ -1,4 +1,3 @@
-
 import { ThreeElements } from '@react-three/fiber';
 
 export interface Vector3 {
@@ -7,52 +6,79 @@ export interface Vector3 {
   z: number;
 }
 
-export interface Agent {
+export type AgentType = 'claude-code' | 'cursor' | 'aider' | 'codex' | 'custom';
+export type AgentStatus = 'idle' | 'working' | 'error' | 'spawning' | 'done';
+export type WorkMode = 'manual' | 'auto';
+
+export interface WorkspaceAgent {
   id: string;
   name: string;
+  type: AgentType;
   color: string;
+  size: number;
   position: Vector3;
   targetPosition: Vector3;
-  status: 'idle' | 'moving' | 'acting';
-  lastAction?: string;
-  inventory: Record<string, number>;
-  bio?: string;
-  erc8004AgentId?: string;
-  erc8004Registry?: string;
-  reputationScore?: number;
-  localReputation?: number;
-  combinedReputation?: number;
-  agentClass?: string;
-  materials?: Record<string, number>;
-  isExternal?: boolean;
-  sourceChainId?: number;
-  externalMetadata?: Record<string, unknown>;
+  status: AgentStatus;
+  currentTask?: string;
+  currentFile?: string;
+  currentZoneId?: string;
+  subAgentOf?: string;
+  progress?: number;
+  errorMessage?: string;
+  launchCommand?: string;
+  workMode: WorkMode;
+  connectedAt: number;
+  lastHeartbeat: number;
+  pid?: number;
 }
 
-export interface WorldState {
-  agents: Agent[];
-  events: string[];
-  lastUpdate: number;
+export type ZoneSize = 'small' | 'medium' | 'large';
+export type ZoneStatus = 'idle' | 'active' | 'error';
+
+export interface ProjectZone {
+  id: string;
+  name: string;
+  path: string;
+  position: Vector3;
+  size: ZoneSize;
+  color: string;
+  activeAgents: string[];
+  fileCount?: number;
+  language?: string;
+  framework?: string;
+  status: ZoneStatus;
 }
 
-export enum WorldActionType {
-  MOVE = 'MOVE',
-  BUILD = 'BUILD',
-  COLLECT = 'COLLECT',
-  SOCIALIZE = 'SOCIALIZE'
+export type TaskStatus = 'pending' | 'in_progress' | 'done' | 'error';
+
+export interface WorkspaceTask {
+  id: string;
+  description: string;
+  zoneId: string;
+  assignedAgents: string[];
+  status: TaskStatus;
+  createdAt: number;
+  completedAt?: number;
+  files: string[];
 }
 
-export interface WorldMessage {
-  sender: string;
-  content: string;
-  timestamp: number;
+export interface WorkspaceSnapshot {
+  agents: WorkspaceAgent[];
+  zones: ProjectZone[];
+  tasks: WorkspaceTask[];
 }
 
-/**
- * Global augmentation to support React Three Fiber intrinsic elements in JSX.
- * This covers both global JSX and React-specific JSX namespaces to resolve 
- * "Property X does not exist on type 'JSX.IntrinsicElements'" errors.
- */
+export interface WorkspaceUpdate {
+  tick: number;
+  updates: Array<{
+    id: string;
+    x: number;
+    y: number;
+    z: number;
+    status?: AgentStatus;
+  }>;
+}
+
 declare global {
   namespace JSX {
     interface IntrinsicElements extends ThreeElements {}
@@ -63,74 +89,4 @@ declare module 'react' {
   namespace JSX {
     interface IntrinsicElements extends ThreeElements {}
   }
-}
-
-
-export interface TerminalMessage {
-  id: number;
-  agentId: string;
-  agentName: string;
-  message: string;
-  createdAt: number;
-}
-
-export type MessageEventSource = 'system' | 'agent';
-
-export interface MessageEvent {
-  id: number;
-  agentId: string | null;
-  agentName?: string;
-  source: MessageEventSource;
-  kind: string;
-  body: string;
-  metadata?: Record<string, unknown>;
-  createdAt: number;
-}
-
-export interface DirectMessage {
-  id: number;
-  fromId: string;
-  fromType: 'human' | 'agent';
-  toAgentId: string;
-  message: string;
-  readAt?: number | null;
-  createdAt: number;
-}
-
-export interface Guild {
-  id: string;
-  name: string;
-  commanderAgentId: string;
-  viceCommanderAgentId: string;
-  createdAt: number;
-  memberCount?: number;
-}
-
-export interface Directive {
-  id: string;
-  type: 'grid' | 'guild' | 'bounty';
-  submittedBy: string;
-  guildId?: string;
-  description: string;
-  agentsNeeded: number;
-  expiresAt: number;
-  status: 'active' | 'completed' | 'expired';
-  createdAt: number;
-  yesVotes: number;
-  noVotes: number;
-}
-
-export interface WorldPrimitive {
-  id: string;
-  shape: 'box' | 'sphere' | 'cone' | 'cylinder' | 'plane' | 'torus' | 'circle' | 'dodecahedron' | 'icosahedron' | 'octahedron' | 'ring' | 'tetrahedron' | 'torusKnot' | 'capsule';
-  ownerAgentId: string;
-  ownerAgentName?: string;
-  position: Vector3;
-  rotation: Vector3;
-  scale: Vector3;
-  color: string;
-  createdAt: number;
-  materialType?: string | null;
-  blueprintInstanceId?: string | null;
-  blueprintName?: string | null;
 }

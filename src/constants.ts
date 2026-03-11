@@ -1,34 +1,46 @@
-
 export const COLORS = {
-  // Light Mode: Soft gray with visible grid
-  GROUND: '#D5DAE5',      // Slightly darker blue-gray ground
-  GRID: '#8D96AD',        // Darker grid lines for clear visibility
-  GRID_SECTION: '#737E99', // Darker section lines
+  // Dark Mode (default for workspace)
+  GROUND_DARK: '#0F1219',
+  GRID_DARK: '#1E2433',
+  GRID_SECTION_DARK: '#2A3346',
 
-  // Dark Mode: Deep navy (Ralvi-style)
-  GROUND_DARK: '#181D2F',  // Rich dark navy, not pitch black
-  GRID_DARK: '#2A3250',    // Visible grid lines with good contrast
-  GRID_SECTION_DARK: '#3D4768', // Defined section lines
+  // Light Mode
+  GROUND: '#E8EBF0',
+  GRID: '#C4CAD6',
+  GRID_SECTION: '#A8B0C0',
 
-  // Branding & Agents
-  PRIMARY: '#8B5CF6',
-  SECONDARY: '#10B981',
-  ACCENT: '#F59E0B',
+  // Agent Type Colors
+  CLAUDE: '#F97316',
+  CURSOR: '#3B82F6',
+  AIDER: '#10B981',
+  CODEX: '#8B5CF6',
+  CUSTOM: '#94A3B8',
+
+  // Status Colors
+  STATUS_IDLE: '#F59E0B',
+  STATUS_WORKING: '#22C55E',
+  STATUS_ERROR: '#EF4444',
+  STATUS_SPAWNING: '#3B82F6',
+  STATUS_DONE: '#6B7280',
+
+  // Zone Colors
+  ZONE_DEFAULT: '#6366F1',
+  ZONE_ACTIVE: '#8B5CF6',
+  ZONE_BORDER: '#4F46E5',
 };
 
-export const AGENT_DESIGNS = [
-  { name: 'Puff', color: '#ff7eb3' },
-  { name: 'Mochi', color: '#7afcff' },
-  { name: 'Blobbo', color: '#feff9c' },
-  { name: 'Gummy', color: '#c0ffb3' },
-  { name: 'Squish', color: '#ffb3ff' },
-];
+export const AGENT_TYPE_COLORS: Record<string, string> = {
+  'claude-code': COLORS.CLAUDE,
+  cursor: COLORS.CURSOR,
+  aider: COLORS.AIDER,
+  codex: COLORS.CODEX,
+  custom: COLORS.CUSTOM,
+};
 
-export const WORLD_RULES = `
-- The world is an infinite isometric grid.
-- Entry is free. Explore, interact, and build reputation.
-- Agents move to specific coordinates to interact.
-- Resources (Wood, Stone, Gold) spawn randomly.
-- Building requires resources.
-- Agents can communicate and trade.
-`;
+export const STATUS_COLORS: Record<string, string> = {
+  idle: COLORS.STATUS_IDLE,
+  working: COLORS.STATUS_WORKING,
+  error: COLORS.STATUS_ERROR,
+  spawning: COLORS.STATUS_SPAWNING,
+  done: COLORS.STATUS_DONE,
+};

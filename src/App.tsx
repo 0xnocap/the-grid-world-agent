@@ -1,518 +1,159 @@
-
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { usePrivy, useWallets } from '@privy-io/react-auth';
-import { createWalletClient, custom } from 'viem';
-import { base, baseSepolia } from 'viem/chains';
-import { wrapFetchWithPayment } from 'x402-fetch';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import WorldScene from './components/World/WorldScene';
-import Overlay from './components/UI/Overlay';
-import SpectatorHUD from './components/UI/SpectatorHUD';
-import WalletModal, { type ERC8004FormData } from './components/UI/WalletModal';
-import { Agent, WorldState, Vector3 } from './types';
+import WorkspaceHUD from './components/UI/WorkspaceHUD';
+import CommandBar from './components/UI/CommandBar';
+import AgentInspector from './components/UI/AgentInspector';
+import ZoneInspector from './components/UI/ZoneInspector';
+import SelectionBox from './components/UI/SelectionBox';
+import Minimap from './components/UI/Minimap';
 import { socketService } from './services/socketService';
-import { useWorldStore } from './store';
-import { fetchWalletBalance } from './utils/balance';
-
-type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
-const FRONTEND_MAINTENANCE_MODE = false;
-const FRONTEND_MAINTENANCE_MESSAGE = 'opgrid is under maintainence.';
+import { useWorkspaceStore } from './store';
 
 const App: React.FC = () => {
-  // Use granular Zustand selectors to avoid re-renders from unrelated state changes
-  const agents = useWorldStore((s) => s.agents);
-  const events = useWorldStore((s) => s.events);
-  const messages = useWorldStore((s) => s.messages);
-  const balance = useWorldStore((s) => s.balance);
-  const hasEntered = useWorldStore((s) => s.hasEntered);
-  const isSimulating = useWorldStore((s) => s.isSimulating);
-  const playerId = useWorldStore((s) => s.playerId);
-  const walletAddress = useWorldStore((s) => s.walletAddress);
-  const lastUpdate = useWorldStore((s) => s.lastUpdate);
-  const followAgentId = useWorldStore((s) => s.followAgentId);
-  const lastFollowAgentId = useWorldStore((s) => s.lastFollowAgentId);
-  const snapshotLoaded = useWorldStore((s) => s.snapshotLoaded);
+  const snapshotLoaded = useWorkspaceStore((s) => s.snapshotLoaded);
+  const setSelectionBox = useWorkspaceStore((s) => s.setSelectionBox);
+  const setSelectedAgentIds = useWorkspaceStore((s) => s.setSelectedAgentIds);
+  const agents = useWorkspaceStore((s) => s.agents);
 
-  // Actions are stable references — safe to select once
-  const updateAgent = useWorldStore((s) => s.updateAgent);
-  const addEvent = useWorldStore((s) => s.addEvent);
-  const addMessage = useWorldStore((s) => s.addMessage);
-  const setBalance = useWorldStore((s) => s.setBalance);
-  const setHasEntered = useWorldStore((s) => s.setHasEntered);
-  const setPlayerId = useWorldStore((s) => s.setPlayerId);
-  const setWalletAddress = useWorldStore((s) => s.setWalletAddress);
-  const setFollowAgentId = useWorldStore((s) => s.setFollowAgentId);
-  const setLastFollowAgentId = useWorldStore((s) => s.setLastFollowAgentId);
-  const reset = useWorldStore((s) => s.reset);
-
-  // Memoize worldState so it only changes when agents/events/lastUpdate actually change
-  const worldState: WorldState = useMemo(
-    () => ({ agents, events, lastUpdate }),
-    [agents, events, lastUpdate]
-  );
-
-  const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [showAccessModal, setShowAccessModal] = useState(false);
-
-  const [registerStatus, setRegisterStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle');
-  const [registeredAgentId, setRegisteredAgentId] = useState<string | null>(null);
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-  const [dismissedWelcome, setDismissedWelcome] = useState(false);
-
-  const [isDarkMode, setIsDarkMode] = useState(() => {
-    // Check local storage first
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('theme');
-      if (saved) return saved === 'dark';
-    }
-    return true;
-  });
-
-  const [cameraLocked, setCameraLocked] = useState(false);
   const [sceneRendered, setSceneRendered] = useState(false);
+  const isDragging = useRef(false);
+  const dragStart = useRef<{ x: number; y: number } | null>(null);
 
-  // Allow external control of camera follow via URL param (for autonomous agent vision)
-  const [mapView, setMapView] = useState(false);
+  // Connect socket on mount
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const followId = params.get('follow');
-    if (followId) {
-      setFollowAgentId(followId);
-      setLastFollowAgentId(followId);
-      setCameraLocked(true);
-    }
-    if (params.get('view') === 'map') {
-      setMapView(true);
-    }
-  }, [setFollowAgentId, setLastFollowAgentId]);
-
-  const toggleDarkMode = () => {
-    const newMode = !isDarkMode;
-    setIsDarkMode(newMode);
-    localStorage.setItem('theme', newMode ? 'dark' : 'light');
-  };
-
-  // Helper to find most interesting agent
-  const getMostActiveAgent = useCallback(() => {
-    // Prefer moving/acting agents
-    const active = agents.find(a => a.status === 'moving' || a.status === 'acting');
-    return active || agents[0];
-  }, [agents]);
-
-  const toggleCameraLock = () => {
-    const nextLocked = !cameraLocked;
-    
-    if (nextLocked) {
-      // Locking ON
-      let targetId = lastFollowAgentId;
-      
-      // If last followed agent is gone, or never set
-      if (!targetId || !agents.find(a => a.id === targetId)) {
-        if (playerId) {
-          targetId = playerId;
-        } else {
-          const target = getMostActiveAgent();
-          targetId = target?.id || null;
-        }
-      }
-      
-      if (targetId) {
-        setFollowAgentId(targetId);
-        setLastFollowAgentId(targetId);
-      }
-    } else {
-      // Locking OFF - clear follow but keep last for memory
-      setFollowAgentId(null);
-    }
-    
-    setCameraLocked(nextLocked);
-  };
-
-  // Fallback if followed agent leaves
-  useEffect(() => {
-    if (followAgentId && !agents.find(a => a.id === followAgentId)) {
-      // Followed agent disappeared
-      if (playerId) {
-        // Fallback to self
-        setFollowAgentId(playerId);
-        setLastFollowAgentId(playerId);
-      } else {
-        // Fallback to another active agent
-        const next = getMostActiveAgent();
-        if (next) {
-          setFollowAgentId(next.id);
-          setLastFollowAgentId(next.id);
-        } else {
-          setFollowAgentId(null);
-        }
-      }
-    }
-  }, [agents, followAgentId, playerId, getMostActiveAgent, setFollowAgentId, setLastFollowAgentId]);
-
-  // Auto-connect socket as spectator on mount (no auth required to watch)
-  useEffect(() => {
-    if (FRONTEND_MAINTENANCE_MODE) return;
-
-    socketService.connectSpectator().catch((err) => {
-      console.warn('[App] Spectator connection failed:', err.message);
-    });
+    socketService.connectSpectator();
     return () => {
       socketService.disconnect();
     };
   }, []);
 
-  const { login, logout, authenticated, ready, user } = usePrivy();
-  const { wallets } = useWallets();
-
-  // Fetch balance when wallet is connected
-  useEffect(() => {
-    const updateBalance = async () => {
-      const address = user?.wallet?.address;
-      if (address) {
-        setWalletAddress(address);
-        const bal = await fetchWalletBalance(address);
-        setBalance(bal);
-      }
-    };
-
-    if (authenticated && user?.wallet?.address) {
-      updateBalance();
-      // Refresh balance every 30 seconds
-      const interval = setInterval(updateBalance, 30000);
-      return () => clearInterval(interval);
-    }
-  }, [authenticated, user?.wallet?.address, setBalance, setWalletAddress]);
-
-  // Handle disconnect
-  const handleDisconnect = async () => {
-    socketService.disconnect();
-    await logout();
-    reset();
-    // Reconnect as spectator so world stays visible
-    socketService.connectSpectator().catch(() => {});
-  };
-
-  // Register new agent on-chain via wallet
-  const handleRegisterAgent = async () => {
-    if (!user?.wallet?.address) return;
-    setRegisterStatus('pending');
-    try {
-      // Use Privy's embedded wallet provider to call register() on the IdentityRegistry
-      const provider = await (user.wallet as any).getEthersProvider();
-      const signer = await provider.getSigner();
-      const { ethers } = await import('ethers');
-      const identityRegistry = new ethers.Contract(
-        '0x8004A818BFB912233c491871b3d84c89A494BD9e',
-        ['function register() returns (uint256 agentId)', 'event Registered(uint256 indexed agentId, string agentURI, address indexed owner)'],
-        signer
-      );
-      const tx = await identityRegistry.register();
-      const receipt = await tx.wait();
-      // Extract agentId from Registered event
-      const registeredEvent = receipt.logs.find((log: any) => {
-        try {
-          return identityRegistry.interface.parseLog(log)?.name === 'Registered';
-        } catch { return false; }
-      });
-      if (registeredEvent) {
-        const parsed = identityRegistry.interface.parseLog(registeredEvent);
-        const newAgentId = parsed?.args?.agentId?.toString();
-        if (newAgentId) {
-          setRegisteredAgentId(newAgentId);
-          setRegisterStatus('success');
-          addEvent(`Agent #${newAgentId} registered on Base Sepolia!`);
-          return;
-        }
-      }
-      setRegisterStatus('error');
-    } catch (error) {
-      console.error('[App] Register agent failed:', error);
-      setRegisterStatus('error');
-    }
-  };
-
-  // Wallet connection — triggers Privy login directly
-  const handleConnect = () => {
-    login();
-  };
-
-  // Enter world — requires ERC-8004 identity (non-optional)
-  const handleEnterWorld = async (erc8004: ERC8004FormData, bio?: string) => {
-    if (!authenticated) return;
-
-    const addr = user?.wallet?.address;
-    if (!addr) {
-      setConnectionError("No wallet connected.");
-      return;
-    }
-
-    setConnectionState('connecting');
-    setConnectionError(null);
-
-    try {
-      // Step 1: Sign auth message with wallet
-      addEvent('Signing authentication...');
-      const timestamp = new Date().toISOString();
-      const message = `Enter OpGrid\nTimestamp: ${timestamp}`;
-
-      // Find the connected wallet and sign
-      const wallet = wallets.find(w => w.address?.toLowerCase() === addr.toLowerCase());
-      if (!wallet) {
-        throw new Error('Wallet not found. Please reconnect.');
-      }
-      const provider = await wallet.getEthereumProvider();
-      const signature = await provider.request({
-        method: 'personal_sign',
-        params: [message, addr],
-      }) as string;
-
-      const chainId = Number(import.meta.env.VITE_CHAIN_ID || 84532);
-      const walletClient = createWalletClient({
-        account: addr as `0x${string}`,
-        chain: chainId === 8453 ? base : baseSepolia,
-        transport: custom(provider as any),
-      });
-      const maxUsdcAtomic = BigInt(
-        Math.max(1, Math.round(Number(import.meta.env.VITE_ENTRY_FEE_USDC || '0.10') * 1_000_000))
-      );
-      const paidFetch = wrapFetchWithPayment(fetch as any, walletClient as any, maxUsdcAtomic);
-
-      // Step 2: Register agent via REST API (signed auth + ERC-8004)
-      addEvent('Verifying agent identity...');
-      const { agentId, position } = await socketService.enterWorld(
-        addr,
-        { name: addr, color: '#A78BFA' },
-        erc8004,
-        bio,
-        signature,
-        timestamp,
-        paidFetch as any
-      );
-
-      // Step 2: Reconnect socket with auth token
-      addEvent('Connecting to world...');
-      socketService.disconnect();
-      await socketService.connect();
-
-      // Step 3: Update local state
-      setPlayerId(agentId);
-      setHasEntered(true);
-      setShowAccessModal(false);
-      setConnectionState('connected');
-      
-      // Default camera follow to self
-      setFollowAgentId(agentId);
-      setLastFollowAgentId(agentId);
-      setCameraLocked(true);
-
-      addEvent(`Welcome to OpGrid! Spawned at (${Math.round(position.x)}, ${Math.round(position.z)})`);
-
-    } catch (error) {
-      console.error('[App] Failed to enter world:', error);
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      setConnectionState('error');
-      setConnectionError(message);
-      addEvent(`Connection failed: ${message}`);
-    }
-  };
-
-  // Retry connection
-  const handleRetry = () => {
-    setConnectionState('idle');
-    setConnectionError(null);
-  };
-
+  // Reset scene rendered state when snapshot is not loaded
   useEffect(() => {
     if (!snapshotLoaded) {
       setSceneRendered(false);
     }
   }, [snapshotLoaded]);
 
-  // Immediate movement handling for responsiveness
-  const handleMoveTo = useCallback((pos: Vector3) => {
-    if (!playerId) return;
+  // Drag-select mouse handlers
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      // Only left button, and not when clicking on UI elements
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      // Skip if clicking on a UI overlay (anything inside .pointer-events-auto)
+      if (target.closest('.pointer-events-auto') && !target.closest('.cursor-crosshair')) return;
 
-    // Update local state immediately for responsiveness
-    updateAgent(playerId, { targetPosition: pos, status: 'moving' });
+      dragStart.current = { x: e.clientX, y: e.clientY };
+      isDragging.current = false;
+    },
+    []
+  );
 
-    // Send to server
-    if (socketService.isConnected()) {
-      socketService.sendMove(playerId, pos.x, pos.z);
-    }
-  }, [playerId, updateAgent]);
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      if (!dragStart.current) return;
 
-  const handleAgentDoubleClick = useCallback((agent: Agent) => {
-    // OLD: setSelectedAgent(agent);
-    
-    // NEW: Just follow the agent. User must click "Following" badge to see bio.
-    setFollowAgentId(agent.id);
-    setLastFollowAgentId(agent.id);
-    setCameraLocked(true);
-  }, [setFollowAgentId, setLastFollowAgentId, setCameraLocked]);
+      const dx = e.clientX - dragStart.current.x;
+      const dy = e.clientY - dragStart.current.y;
 
-  // Handle agent click from sidebar
-  const handleAgentClick = useCallback((agentId: string) => {
-    setFollowAgentId(agentId);
-    setLastFollowAgentId(agentId);
-    setCameraLocked(true);
-  }, [setFollowAgentId, setLastFollowAgentId]);
+      // Threshold to start drag selection (avoid accidental drags)
+      if (!isDragging.current && Math.abs(dx) + Math.abs(dy) > 8) {
+        isDragging.current = true;
+      }
 
-  /* 
-  const handleOpenBio = useCallback((agentId: string) => {
-     // Deprecated - handled locally in UI components now
-  }, []);
-  */
+      if (isDragging.current) {
+        setSelectionBox({
+          startX: dragStart.current.x,
+          startY: dragStart.current.y,
+          endX: e.clientX,
+          endY: e.clientY,
+        });
+      }
+    },
+    [setSelectionBox]
+  );
 
-  // Handle chat/prompt input
-  const handleUserAction = useCallback(async (action: string) => {
-    if (!playerId || !socketService.isConnected()) return;
+  const handleMouseUp = useCallback(
+    (_e: React.MouseEvent) => {
+      if (isDragging.current) {
+        // Selection box was active -- compute selected agents
+        const box = useWorkspaceStore.getState().selectionBox;
+        if (box) {
+          const left = Math.min(box.startX, box.endX);
+          const right = Math.max(box.startX, box.endX);
+          const top = Math.min(box.startY, box.endY);
+          const bottom = Math.max(box.startY, box.endY);
 
-    addMessage({ sender: 'You', content: action, timestamp: Date.now() });
-    socketService.sendChat(playerId, action);
-  }, [playerId, addMessage]);
+          // For simplicity, use a heuristic: map agent world positions to screen
+          // This is a rough 2D selection using the agent positions projected
+          // into a simplified screen space. A full solution would use the Three.js
+          // camera projection, but that requires access to the camera from the Canvas.
+          // Here we do a simple approximate selection.
+          const selectedIds: string[] = [];
+          const currentAgents = useWorkspaceStore.getState().agents;
 
-  if (FRONTEND_MAINTENANCE_MODE) {
-    return (
-      <div className={`w-screen h-screen overflow-hidden relative transition-colors duration-1000 ${isDarkMode ? 'dark' : ''}`}>
-        <div className={`fixed inset-0 z-[200] flex items-center justify-center ${isDarkMode ? 'bg-[#070B18]' : 'bg-white'}`}>
-          <div className={`w-full max-w-md mx-6 rounded-3xl border backdrop-blur-xl p-8 shadow-2xl ${
-            isDarkMode
-              ? 'bg-slate-950/90 border-white/10 text-white'
-              : 'bg-white/95 border-gray-200/70 text-gray-900'
-          }`}>
-            <h1 className="text-lg font-bold tracking-tight">OpGrid</h1>
-            <p className={`mt-2 text-sm ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
-              {FRONTEND_MAINTENANCE_MESSAGE}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+          // Approximate screen mapping: we treat the canvas as the full viewport
+          // and roughly project based on the initial camera orientation.
+          // This is a placeholder that selects agents whose screen-space coordinates
+          // fall within the drag box. In production, you would use camera.project().
+          for (const agent of currentAgents) {
+            // Rough orthographic projection estimate (camera at 60,60,60 looking at origin)
+            // This will work reasonably for overview-style cameras
+            const screenX = window.innerWidth / 2 + (agent.position.x - agent.position.z) * 4;
+            const screenY = window.innerHeight / 2 - (agent.position.y * 8 - (agent.position.x + agent.position.z) * 2);
+
+            if (screenX >= left && screenX <= right && screenY >= top && screenY <= bottom) {
+              selectedIds.push(agent.id);
+            }
+          }
+
+          setSelectedAgentIds(selectedIds);
+        }
+      }
+
+      isDragging.current = false;
+      dragStart.current = null;
+      setSelectionBox(null);
+    },
+    [setSelectedAgentIds, setSelectionBox]
+  );
 
   return (
-    <div className={`w-screen h-screen overflow-hidden relative transition-colors duration-1000 ${isDarkMode ? 'dark' : ''}`}>
-      {/* Loading overlay — visible until snapshot is received and first frame has rendered */}
-      <div className={`fixed inset-0 z-[100] flex flex-col items-center justify-center
-        transition-opacity duration-700
-        ${snapshotLoaded && sceneRendered ? 'opacity-0 pointer-events-none' : 'opacity-100'}
-        ${isDarkMode ? 'bg-[#070B18]' : 'bg-white'}`}>
+    <div
+      className="w-screen h-screen overflow-hidden relative dark"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+    >
+      {/* Loading overlay */}
+      <div
+        className={`fixed inset-0 z-[100] flex flex-col items-center justify-center
+          transition-opacity duration-700
+          ${snapshotLoaded && sceneRendered ? 'opacity-0 pointer-events-none' : 'opacity-100'}
+          bg-[#070B18]`}
+      >
         <div className="flex flex-col items-center gap-6">
           <div className="w-1 h-6 bg-violet-500 rounded-full shadow-lg shadow-violet-500/50" />
-          <h1 className={`text-sm font-black uppercase tracking-[0.4em] ${isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
-            OpGrid
+          <h1 className="text-sm font-black uppercase tracking-[0.4em] text-slate-100">
+            OpGrid Workspace
           </h1>
-          <div className={`w-5 h-5 border-2 rounded-full animate-spin ${isDarkMode ? 'border-slate-700 border-t-violet-500' : 'border-slate-200 border-t-violet-500'}`} />
-          <p className={`text-[10px] font-mono uppercase tracking-widest ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-            Loading world geometry...
+          <div className="w-5 h-5 border-2 rounded-full animate-spin border-slate-700 border-t-violet-500" />
+          <p className="text-[10px] font-mono uppercase tracking-widest text-slate-500">
+            Connecting to workspace...
           </p>
         </div>
       </div>
 
-      {/* 3D World Scene - always visible */}
-      <WorldScene
-        playerAgentId={playerId || undefined}
-        isDarkMode={isDarkMode}
-        onGridClick={handleMoveTo}
-        onAgentDoubleClick={handleAgentDoubleClick}
-        cameraLocked={cameraLocked}
-        mapView={mapView}
-        onFirstFrameRendered={() => setSceneRendered(true)}
-      />
+      {/* 3D World Scene */}
+      <WorldScene onFirstFrameRendered={() => setSceneRendered(true)} />
 
-      
-      {/* Agent Access Modal - only when user opens it */}
-      {showAccessModal && (
-        <WalletModal
-          onConnect={handleConnect}
-          onEnter={handleEnterWorld}
-          onClose={() => setShowAccessModal(false)}
-          onRegisterAgent={handleRegisterAgent}
-          isLoading={connectionState === 'connecting' || !ready}
-          error={connectionError}
-          onRetry={handleRetry}
-          isAuthenticated={authenticated}
-          walletAddress={user?.wallet?.address}
-          registerStatus={registerStatus}
-          registeredAgentId={registeredAgentId}
-          isDarkMode={isDarkMode}
-        />
-      )}
-
-      {/* Welcome banner for spectators */}
-      {!hasEntered && !showAccessModal && (
-        <SpectatorHUD
-          worldState={worldState}
-          isDarkMode={isDarkMode}
-          cameraLocked={cameraLocked}
-          onToggleCameraLock={toggleCameraLock}
-          onEnterWorld={() => setShowAccessModal(true)}
-          onToggleDarkMode={toggleDarkMode}
-          onAgentClick={handleAgentClick}
-        />
-      )}
-
-      {/* Welcome banner for spectators */}
-      {!hasEntered && !showAccessModal && !dismissedWelcome && (
-        <div className="fixed top-0 left-0 right-0 z-40 pointer-events-none">
-          <div className="mx-auto max-w-lg mt-6 px-4 pointer-events-auto">
-            <div className={`backdrop-blur-xl rounded-2xl shadow-xl border px-6 py-5 transition-colors duration-1000 float-anim ${
-               isDarkMode 
-               ? 'bg-slate-950/80 border-white/10 text-white' 
-               : 'bg-white/90 border-gray-200/60 text-gray-900'
-            }`}>
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h1 className="text-base font-bold tracking-tight">OpGrid</h1>
-                  <p className={`text-xs mt-1 leading-relaxed max-w-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                    A persistent world on Base where autonomous agents live, move, and build reputation.
-                    Double-click any agent to learn about them.
-                  </p>
-                </div>
-                <button
-                  onClick={() => setDismissedWelcome(true)}
-                  className={`transition-colors mt-0.5 flex-shrink-0 ${isDarkMode ? 'text-slate-500 hover:text-white' : 'text-gray-400 hover:text-gray-600'}`}
-                >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* HUD Overlay - Show when entered */}
-      {hasEntered && (
-        <Overlay
-          worldState={worldState}
-          messages={messages}
-          onSendMessage={handleUserAction}
-          balance={balance}
-          walletAddress={walletAddress || ''}
-          onDisconnect={handleDisconnect}
-          isDarkMode={isDarkMode}
-          onToggleDarkMode={toggleDarkMode}
-          cameraLocked={cameraLocked}
-          onToggleCameraLock={toggleCameraLock}
-          // onOpenBio={handleOpenBio}
-          followedAgentId={followAgentId}
-        />
-      )}
-      {/* Simulation Indicator */}
-      {isSimulating && (
-        <div className="fixed top-24 left-1/2 -translate-x-1/2 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full shadow-lg text-violet-600 text-xs font-bold border border-violet-100 flex items-center space-x-2 z-50 animate-pulse">
-          <div className="w-2 h-2 bg-violet-600 rounded-full animate-bounce" />
-          <span>World Model Thinking...</span>
-        </div>
-      )}
-
-      {/* Connection Status Indicator */}
-      {hasEntered && !socketService.isConnected() && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-red-500/90 backdrop-blur-md px-4 py-2 rounded-full shadow-lg text-white text-xs font-bold flex items-center space-x-2 z-50">
-          <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-          <span>Reconnecting...</span>
-        </div>
-      )}
+      {/* UI Overlays */}
+      <WorkspaceHUD />
+      <CommandBar />
+      <AgentInspector />
+      <ZoneInspector />
+      <SelectionBox />
+      <Minimap />
     </div>
   );
 };

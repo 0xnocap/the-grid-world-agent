@@ -1,413 +1,126 @@
 import { io, Socket } from 'socket.io-client';
-import { useWorldStore } from '../store';
-import type { Agent, WorldPrimitive, MessageEvent } from '../types';
+import { useWorkspaceStore } from '../store';
+import type { WorkspaceAgent, ProjectZone, WorkspaceTask, AgentStatus } from '../types';
 
-// In production, use same origin (server serves frontend). In dev, use localhost:4101.
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ||
-  (typeof window !== 'undefined' && !window.location.hostname.includes('localhost')
-    ? window.location.origin
-    : 'http://localhost:4101');
-
-interface WorldSnapshot {
-  tick: number;
-  primitiveRevision?: number;
-  agents: Array<{
-    id: string;
-    name: string;
-    color: string;
-    x: number;
-    y: number;
-    z: number;
-    status: string;
-    inventory: Record<string, number>;
-    bio?: string;
-    erc8004AgentId?: string;
-    erc8004Registry?: string;
-    reputationScore?: number;
-    localReputation?: number;
-    combinedReputation?: number;
-    agentClass?: string;
-    materials?: Record<string, number>;
-    isExternal?: boolean;
-    sourceChainId?: number;
-    externalMetadata?: Record<string, unknown>;
-  }>;
-  primitives: WorldPrimitive[];
-  events: MessageEvent[];
-}
-
-interface WorldUpdate {
-  tick: number;
-  updates: Array<{
-    id: string;
-    x: number;
-    y: number;
-    z: number;
-    status?: string;
-  }>;
-}
-
-interface WorldRevisionEvent {
-  primitiveRevision: number;
-  reason?: 'primitive:created' | 'primitive:deleted' | 'primitives:sync';
-}
-
-export interface ERC8004Input {
-  agentId: string;
-  agentRegistry: string;
-}
-
-export interface EnterWorldResponse {
-  agentId: string;
-  position: { x: number; z: number };
-  token: string;
-  erc8004?: { agentId: string; agentRegistry: string };
-}
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4101';
 
 class SocketService {
   private socket: Socket | null = null;
-  private authToken: string | null = null;
-  private agentId: string | null = null;
 
-  // Batch primitive events and flush once per animation frame to avoid
-  // triggering N separate React re-renders during blueprint building.
-  private pendingPrimAdds: WorldPrimitive[] = [];
-  private pendingPrimDeletes: string[] = [];
-  private primFlushScheduled = false;
+  connect() {
+    if (this.socket?.connected) return;
 
-  private schedulePrimitiveFlush(): void {
-    if (this.primFlushScheduled) return;
-    this.primFlushScheduled = true;
-    requestAnimationFrame(() => {
-      this.primFlushScheduled = false;
-      const adds = this.pendingPrimAdds;
-      const deletes = this.pendingPrimDeletes;
-      this.pendingPrimAdds = [];
-      this.pendingPrimDeletes = [];
-
-      if (adds.length === 0 && deletes.length === 0) return;
-
-      const store = useWorldStore.getState();
-      let prims = store.worldPrimitives;
-
-      if (deletes.length > 0) {
-        const deleteSet = new Set(deletes);
-        prims = prims.filter(p => !deleteSet.has(p.id));
-      }
-      if (adds.length > 0) {
-        prims = [...prims, ...adds];
-      }
-
-      store.setWorldPrimitives(prims);
-    });
-  }
-
-  // Register agent via REST API, returns token for WebSocket auth
-  async enterWorld(
-    ownerId: string,
-    visuals?: { name?: string; color?: string },
-    erc8004?: ERC8004Input,
-    bio?: string,
-    signature?: string,
-    timestamp?: string,
-    fetchImpl: typeof fetch = fetch
-  ): Promise<EnterWorldResponse> {
-    const body: Record<string, unknown> = {
-      walletAddress: ownerId,
-      signature,
-      timestamp,
-      visuals,
-    };
-    if (erc8004) {
-      body.agentId = erc8004.agentId;
-      body.agentRegistry = erc8004.agentRegistry;
-    }
-    if (bio) {
-      body.bio = bio;
-    }
-
-    const response = await fetchImpl(`${SERVER_URL}/v1/agents/enter`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+    this.socket = io(SERVER_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 10,
     });
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(error.error || `Failed to enter world: ${response.status}`);
-    }
+    const store = useWorkspaceStore.getState();
 
-    const data: EnterWorldResponse = await response.json();
-    this.authToken = data.token;
-    this.agentId = data.agentId;
-    return data;
-  }
+    this.socket.on('connect', () => {
+      console.log('[Socket] Connected as spectator');
+      this.socket?.emit('spectator:join');
 
-  // Connect as spectator (no auth required) — receive world updates, can't act
-  connectSpectator(): Promise<void> {
-    return this.connectInternal();
-  }
-
-  // Connect to WebSocket with auth token
-  connect(token?: string): Promise<void> {
-    const authToken = token || this.authToken;
-
-    if (!authToken) {
-      return Promise.reject(new Error('No auth token. Call enterWorld() first.'));
-    }
-
-    return this.connectInternal(authToken);
-  }
-
-  private connectInternal(authToken?: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (this.socket?.connected) {
-        console.log('[Socket] Already connected');
-        resolve();
-        return;
-      }
-
-      const mode = authToken ? 'authenticated' : 'spectator';
-      console.log(`[Socket] Connecting to ${SERVER_URL} (${mode})...`);
-
-      const opts: Record<string, unknown> = {
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000,
-      };
-
-      if (authToken) {
-        opts.auth = { token: authToken };
-        opts.query = { token: authToken };
-      }
-
-      this.socket = io(SERVER_URL, opts);
-
-      const connectTimeout = setTimeout(() => {
-        reject(new Error('Connection timeout'));
-      }, 10000);
-
-      this.socket.on('connect', () => {
-        clearTimeout(connectTimeout);
-        console.log(`[Socket] Connected (${mode})`);
-        resolve();
-      });
-
-      this.socket.on('connect_error', (error) => {
-        clearTimeout(connectTimeout);
-        console.error('[Socket] Connection error:', error.message);
-        reject(new Error(`Connection failed: ${error.message}`));
-      });
-
-      this.setupListeners();
+      // Fetch workspace info (path, etc.)
+      fetch(`${SERVER_URL}/api/workspace`)
+        .then((res) => res.json())
+        .then((data: { path: string }) => {
+          useWorkspaceStore.getState().setWorkspacePath(data.path);
+        })
+        .catch(() => { /* non-critical */ });
     });
-  }
-
-  private setupListeners(): void {
-    if (!this.socket) return;
 
     this.socket.on('disconnect', (reason) => {
-      console.log(`[Socket] Disconnected: ${reason}`);
-      useWorldStore.getState().addEvent('Disconnected from server.');
+      console.log('[Socket] Disconnected:', reason);
     });
 
-    // Handle initial world snapshot
-    this.socket.on('world:snapshot', (data: WorldSnapshot) => {
-      console.log(`[Socket] Received world snapshot: ${data.agents.length} agents at tick ${data.tick}`);
-
-      const agents: Agent[] = data.agents.map(a => ({
-        id: a.id,
-        name: a.name,
-        color: a.color,
-        position: { x: a.x, y: a.y, z: a.z },
-        targetPosition: { x: a.x, y: a.y, z: a.z },
-        status: a.status as 'idle' | 'moving' | 'acting',
-        inventory: a.inventory,
-        bio: a.bio,
-        erc8004AgentId: a.erc8004AgentId,
-        erc8004Registry: a.erc8004Registry,
-        reputationScore: a.reputationScore,
-        localReputation: a.localReputation,
-        combinedReputation: a.combinedReputation,
-        agentClass: a.agentClass,
-        materials: a.materials,
-        isExternal: a.isExternal,
-        sourceChainId: a.sourceChainId,
-        externalMetadata: a.externalMetadata,
-      }));
-
-      useWorldStore.getState().setAgents(agents);
-      useWorldStore.getState().setWorldPrimitives(data.primitives || []);
-      if (typeof data.primitiveRevision === 'number') {
-        useWorldStore.getState().setPrimitiveRevision(data.primitiveRevision);
-      }
-      useWorldStore.getState().setMessageEvents(data.events || []);
-      useWorldStore.getState().setSnapshotLoaded(true);
-    });
-
-    // Handle world updates — batch all agent updates into a single state change
-    this.socket.on('world:update', (data: WorldUpdate) => {
-      const store = useWorldStore.getState();
-      const localAgentId = this.agentId;
-
-      const batch = data.updates.map(update => ({
-        id: update.id,
-        changes: {
-          position: { x: update.x, y: update.y, z: update.z },
-          // AgentBlob animates toward targetPosition. Keep non-local targets in sync
-          // with server movement updates so spectators and other players see movement live.
-          ...((!localAgentId || update.id !== localAgentId) && {
-            targetPosition: { x: update.x, y: update.y, z: update.z }
-          }),
-          ...(update.status && { status: update.status as 'idle' | 'moving' | 'acting' })
-        } as Partial<Agent>
-      }));
-
-      store.batchUpdateAgents(batch);
-    });
-
-    // Handle agent join/leave
-    this.socket.on('agent:joined', (data: {
-      id: string;
-      name: string;
-      color: string;
-      x: number;
-      y: number;
-      z: number;
-      status: string;
-      inventory: Record<string, number>;
-      bio?: string;
-      erc8004AgentId?: string;
-      erc8004Registry?: string;
-      reputationScore?: number;
-      localReputation?: number;
-      combinedReputation?: number;
-      agentClass?: string;
-      materials?: Record<string, number>;
-      isExternal?: boolean;
-      sourceChainId?: number;
-      externalMetadata?: Record<string, unknown>;
+    // Full snapshot on initial connection
+    this.socket.on('workspace:snapshot', (snapshot: {
+      agents: WorkspaceAgent[];
+      zones: ProjectZone[];
+      tasks: WorkspaceTask[];
     }) => {
-      console.log(`[Socket] Agent joined: ${data.name}`);
-      useWorldStore.getState().addAgent({
-        id: data.id,
-        name: data.name,
-        color: data.color,
-        position: { x: data.x, y: data.y, z: data.z },
-        targetPosition: { x: data.x, y: data.y, z: data.z },
-        status: data.status as 'idle' | 'moving' | 'acting',
-        inventory: data.inventory,
-        bio: data.bio,
-        erc8004AgentId: data.erc8004AgentId,
-        erc8004Registry: data.erc8004Registry,
-        reputationScore: data.reputationScore,
-        localReputation: data.localReputation,
-        combinedReputation: data.combinedReputation,
-        agentClass: data.agentClass,
-        materials: data.materials,
-        isExternal: data.isExternal,
-        sourceChainId: data.sourceChainId,
-        externalMetadata: data.externalMetadata,
-      });
+      const s = useWorkspaceStore.getState();
+      s.setAgents(snapshot.agents);
+      s.setZones(snapshot.zones);
+      s.setTasks(snapshot.tasks);
+      s.setSnapshotLoaded(true);
+    });
+
+    // Batch position updates (high frequency)
+    this.socket.on('workspace:update', (data: {
+      tick: number;
+      updates: Array<{ id: string; x: number; y: number; z: number; status?: AgentStatus }>;
+    }) => {
+      const s = useWorkspaceStore.getState();
+      s.batchUpdateAgents(
+        data.updates.map((u) => ({
+          id: u.id,
+          changes: {
+            position: { x: u.x, y: u.y, z: u.z },
+            ...(u.status ? { status: u.status } : {}),
+          },
+        }))
+      );
+    });
+
+    // Individual agent events
+    this.socket.on('agent:joined', (agent: WorkspaceAgent) => {
+      useWorkspaceStore.getState().addAgent(agent);
     });
 
     this.socket.on('agent:left', (data: { id: string }) => {
-      console.log(`[Socket] Agent left: ${data.id}`);
-      useWorldStore.getState().removeAgent(data.id);
+      useWorkspaceStore.getState().removeAgent(data.id);
     });
 
-    // Handle unified message events
-    this.socket.on('message:event', (event: MessageEvent) => {
-      useWorldStore.getState().addMessageEvent(event);
-      // Also add to general messages for backward compat
-      if (event.source === 'agent' && event.kind === 'chat') {
-        useWorldStore.getState().addMessage({
-          sender: event.agentName || event.agentId || 'Unknown',
-          content: event.body,
-          timestamp: event.createdAt,
-        });
-      }
+    this.socket.on('agent:status', (data: {
+      id: string;
+      status?: AgentStatus;
+      currentTask?: string;
+      currentFile?: string;
+      progress?: number;
+      errorMessage?: string;
+    }) => {
+      const { id, ...updates } = data;
+      useWorkspaceStore.getState().updateAgent(id, updates);
     });
 
-    // Handle Grid events — batched to coalesce rapid blueprint builds
-    // into a single state update per animation frame.
-    this.socket.on('primitive:created', (primitive: WorldPrimitive) => {
-      this.pendingPrimAdds.push(primitive);
-      this.schedulePrimitiveFlush();
+    // Zone events
+    this.socket.on('zone:updated', (zone: ProjectZone) => {
+      useWorkspaceStore.getState().updateZone(zone);
     });
 
-    this.socket.on('primitive:deleted', (data: { id: string }) => {
-      this.pendingPrimDeletes.push(data.id);
-      this.schedulePrimitiveFlush();
-    });
-
-    this.socket.on('world:primitives_sync', (primitives: WorldPrimitive[]) => {
-      useWorldStore.getState().setWorldPrimitives(primitives);
-    });
-
-    this.socket.on('world:revision', (data: WorldRevisionEvent) => {
-      if (typeof data?.primitiveRevision === 'number') {
-        useWorldStore.getState().setPrimitiveRevision(data.primitiveRevision);
-      }
-    });
-
-    // Handle errors
-    this.socket.on('error', (data: { message: string }) => {
-      console.error('[Socket] Error:', data.message);
-      useWorldStore.getState().addEvent(`Error: ${data.message}`);
+    this.socket.on('zone:removed', (data: { id: string }) => {
+      useWorkspaceStore.getState().removeZone(data.id);
     });
   }
 
-  disconnect(): void {
+  connectSpectator() {
+    this.connect();
+  }
+
+  disconnect() {
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
     }
-    this.authToken = null;
-    this.agentId = null;
   }
 
   isConnected(): boolean {
     return this.socket?.connected ?? false;
   }
 
-  getAgentId(): string | null {
-    return this.agentId;
+  // Emit: move an agent to a new position
+  moveAgent(agentId: string, x: number, z: number) {
+    this.socket?.emit('agent:move', { agentId, x, z });
   }
 
-  getToken(): string | null {
-    return this.authToken;
-  }
-
-  // Send agent input to server
-  sendMove(agentId: string, x: number, z: number): void {
-    if (!this.socket?.connected) {
-      console.log('[Socket] Not connected, cannot send move');
-      return;
-    }
-
-    this.socket.emit('agent:input', {
-      agentId,
-      op: 'MOVE',
-      to: { x, z }
-    });
-  }
-
-  // Send chat message
-  sendChat(agentId: string, message: string): void {
-    if (!this.socket?.connected) {
-      console.log('[Socket] Not connected, cannot send chat');
-      return;
-    }
-
-    this.socket.emit('agent:input', {
-      agentId,
-      op: 'CHAT',
-      message
-    });
+  // Emit: assign selected agents to a zone
+  assignAgents(agentIds: string[], zoneId: string) {
+    this.socket?.emit('agent:assign', { agentIds, zoneId });
   }
 }
 
-// Singleton instance
 export const socketService = new SocketService();
