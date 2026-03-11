@@ -163,7 +163,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
         `}
         onTouchMove={(e) => e.stopPropagation()}
       >
-        <div className="flex flex-col h-full px-5 py-8 gap-8 overflow-y-auto overscroll-contain">
+        <div className="flex flex-col h-full px-5 py-8 gap-8 overflow-y-auto overscroll-contain [&>*]:shrink-0">
           {/* Header with accent line */}
           <div className="space-y-3">
             <div className="flex items-center gap-3">
@@ -218,7 +218,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
           <CertificationPanel isDarkMode={isDarkMode} />
 
           {/* Terminal Section - Agent Chat Messages */}
-          <section className="flex-1 flex flex-col space-y-2 min-h-[200px] lg:min-h-0">
+          <section className="flex flex-col space-y-2 min-h-[250px]">
             <div className={`text-[10px] uppercase tracking-widest flex items-center gap-2 ${sidebarHeader}`}>
               <Terminal size={12} className="text-emerald-500" />
               <span>Terminal</span>

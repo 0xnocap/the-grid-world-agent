@@ -56,6 +56,9 @@ const OPENAI_KEY = envFirst('GPT_API_KEY', 'OPENAI_API_KEY');
 const MINIMAX_KEY = envFirst('MINI_MAX_API_KEY', 'MINIMAX_API_KEY');
 const OPENCODE_KEY = envFirst('OPENCODE_API');
 const OPENROUTER_KEY = envFirst('OPENROUTER_API');
+const ORACLE_OPENROUTER_KEY = envFirst('ORACLE_OPENROUTER_KEY') || OPENROUTER_KEY;
+const CLANK_OPENROUTER_KEY = envFirst('CLANK_OPENROUTER_KEY') || OPENROUTER_KEY;
+const MOUSE_OPENROUTER_KEY = envFirst('MOUSE_OPENROUTER_KEY') || OPENROUTER_KEY;
 const DEFAULT_HEARTBEAT_SECONDS = envSeconds(60, 'AGENT_HEARTBEAT_SECONDS');
 
 // Which agent to start (default: all)
@@ -106,8 +109,8 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('ORACLE_ID', 'ORACLE_AGENT_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'ORACLE_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
-    llmModel: 'nvidia/nemotron-3-super-120b-a12b:free',
-    llmApiKey: OPENROUTER_KEY,
+    llmModel: 'meta-llama/llama-3.3-70b-instruct:free',
+    llmApiKey: ORACLE_OPENROUTER_KEY,
   },
   clank: {
     name: 'clank',
@@ -117,8 +120,8 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('CLANK_AGENT_ID', 'CLANK_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'CLANK_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
-    llmModel: 'nvidia/nemotron-3-super-120b-a12b:free',
-    llmApiKey: OPENROUTER_KEY,
+    llmModel: 'mistralai/mistral-small-3.1-24b-instruct:free',
+    llmApiKey: CLANK_OPENROUTER_KEY,
   },
   mouse: {
     name: 'mouse',
@@ -129,7 +132,7 @@ const agents: Record<string, AgentDef> = {
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'MOUSE_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
     llmModel: 'z-ai/glm-4.5-air:free',
-    llmApiKey: OPENROUTER_KEY,
+    llmApiKey: MOUSE_OPENROUTER_KEY,
   },
 };
 

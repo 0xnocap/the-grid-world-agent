@@ -401,8 +401,12 @@ async function callMinimax(apiKey: string, model: string, systemPrompt: string, 
 }
 
 async function callOpenRouter(apiKey: string, model: string, systemPrompt: string, userPrompt: string): Promise<LLMResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000); // 2 min timeout
+  try {
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
+    signal: controller.signal,
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
@@ -429,6 +433,9 @@ async function callOpenRouter(apiKey: string, model: string, systemPrompt: strin
     ? { inputTokens: data.usage.prompt_tokens || 0, outputTokens: data.usage.completion_tokens || 0 }
     : null;
   return { text: data.choices?.[0]?.message?.content || '{}', usage };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function callOpenCode(apiKey: string, model: string, systemPrompt: string, userPrompt: string): Promise<LLMResponse> {
@@ -1627,7 +1634,10 @@ export async function startAgent(config: AgentConfig): Promise<void> {
 
       const errMsg = (err as any)?.message || String(err);
       if (isRateLimitErrorMessage(errMsg)) {
-        const cooldown = parseRateLimitCooldownSeconds(errMsg, 30);
+        const baseCooldown = parseRateLimitCooldownSeconds(errMsg, 45);
+        // Add random jitter to cooldown so agents don't all retry at the same time
+        const jitter = Math.floor(Math.random() * 15);
+        const cooldown = baseCooldown + jitter;
         rateLimitCooldownUntil = Date.now() + cooldown * 1000;
         console.warn(`[${agentName}] Rate limited. Cooling down for ${cooldown}s.`);
         return;
@@ -1640,11 +1650,16 @@ export async function startAgent(config: AgentConfig): Promise<void> {
     }
   };
 
-  // Run first tick immediately, then loop with dynamic timing
+  // Stagger first tick by 0-20s to avoid all agents hitting the LLM at once
+  const staggerMs = Math.floor(Math.random() * 20_000);
+  console.log(`[${agentName}] First tick in ${(staggerMs / 1000).toFixed(1)}s (stagger)`);
+  await new Promise(r => setTimeout(r, staggerMs));
   await tick();
 
   const scheduleNext = () => {
-    const sleepMs = Math.min(120_000, config.heartbeatSeconds * 1000 + idleStreak * 15_000);
+    // Add 0-10s jitter to prevent agents from syncing up over time
+    const jitterMs = Math.floor(Math.random() * 10_000);
+    const sleepMs = Math.min(120_000, config.heartbeatSeconds * 1000 + idleStreak * 15_000) + jitterMs;
     setTimeout(async () => {
       await tick();
       scheduleNext();
