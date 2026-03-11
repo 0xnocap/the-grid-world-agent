@@ -106,7 +106,7 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('ORACLE_ID', 'ORACLE_AGENT_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'ORACLE_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
-    llmModel: 'nvidia/llama-3.3-nemotron-super-49b-v1:free',
+    llmModel: 'nvidia/llama-3.3-nemotron-super-49b-v1.5',
     llmApiKey: OPENROUTER_KEY,
   },
   clank: {
@@ -117,7 +117,7 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('CLANK_AGENT_ID', 'CLANK_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'CLANK_HEARTBEAT_SECONDS'),
     llmProvider: 'opencode',
-    llmModel: 'opencode/big-pickle',
+    llmModel: 'big-pickle',
     llmApiKey: OPENCODE_KEY,
   },
   mouse: {
@@ -128,7 +128,7 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('MOUSE_AGENT_ID', 'MOUSE_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'MOUSE_HEARTBEAT_SECONDS'),
     llmProvider: 'opencode',
-    llmModel: 'opencode/minimax-m2.5-free',
+    llmModel: 'minimax-m2.5-free',
     llmApiKey: OPENCODE_KEY,
   },
 };
