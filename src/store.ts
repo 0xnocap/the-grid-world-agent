@@ -38,11 +38,15 @@ interface WorkspaceStore {
   inspectorTargetId: string | null;
   openInspector: (panel: 'agent' | 'zone' | 'task', targetId: string) => void;
   closeInspector: () => void;
+  isDarkMode: boolean;
+  toggleDarkMode: () => void;
   showMinimap: boolean;
   toggleMinimap: () => void;
   showCommandBar: boolean;
   toggleCommandBar: () => void;
 
+  cameraTarget: { x: number; z: number } | null;
+  setCameraTarget: (target: { x: number; z: number } | null) => void;
   workspacePath: string | null;
   setWorkspacePath: (path: string) => void;
 
@@ -63,8 +67,12 @@ const initialState = {
   followAgentId: null as string | null,
   inspectorPanel: null as WorkspaceStore['inspectorPanel'],
   inspectorTargetId: null as string | null,
+  isDarkMode: typeof window !== 'undefined'
+    ? (localStorage.getItem('theme') ?? 'dark') === 'dark'
+    : true,
   showMinimap: true,
   showCommandBar: true,
+  cameraTarget: null as { x: number; z: number } | null,
   workspacePath: null as string | null,
   snapshotLoaded: false,
 };
@@ -116,9 +124,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
 
   openInspector: (panel, targetId) => set({ inspectorPanel: panel, inspectorTargetId: targetId }),
   closeInspector: () => set({ inspectorPanel: null, inspectorTargetId: null }),
+  toggleDarkMode: () =>
+    set((s) => {
+      const next = !s.isDarkMode;
+      localStorage.setItem('theme', next ? 'dark' : 'light');
+      return { isDarkMode: next };
+    }),
   toggleMinimap: () => set((s) => ({ showMinimap: !s.showMinimap })),
   toggleCommandBar: () => set((s) => ({ showCommandBar: !s.showCommandBar })),
 
+  setCameraTarget: (target) => set({ cameraTarget: target }),
   setWorkspacePath: (path) => set({ workspacePath: path }),
   setSnapshotLoaded: (loaded) => set({ snapshotLoaded: loaded }),
   reset: () => set(initialState),

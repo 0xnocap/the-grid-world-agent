@@ -11,7 +11,7 @@ import { setupSocketServer } from './socket.js';
 import { registerAgentRoutes } from './api/agents.js';
 import { registerZoneRoutes } from './api/zones.js';
 import { registerTaskRoutes } from './api/tasks.js';
-import { scanWorkspace, watchWorkspace } from './watcher.js';
+import { scanWorkspace, watchWorkspace, detectAgentsInWorkspace } from './watcher.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -109,9 +109,11 @@ async function main() {
       }
     }
     await scanWorkspace(WORKSPACE_PATH);
+    await detectAgentsInWorkspace();
     return {
       status: 'ok',
       zones: workspace.getZones().length,
+      agents: workspace.getAgents().length,
       path: WORKSPACE_PATH,
     };
   });
@@ -155,8 +157,9 @@ async function main() {
   // Start tick loop
   workspace.start();
 
-  // Scan workspace for projects
+  // Scan workspace for projects, then detect agents
   await scanWorkspace(WORKSPACE_PATH);
+  await detectAgentsInWorkspace();
 
   // Watch for file changes (non-blocking)
   watchWorkspace(WORKSPACE_PATH).catch((err) => {
@@ -170,6 +173,7 @@ async function main() {
   console.log(`  → Server:    http://localhost:${PORT}`);
   console.log(`  → Workspace: ${WORKSPACE_PATH}`);
   console.log(`  → Zones:     ${workspace.getZones().length} projects detected`);
+  console.log(`  → Agents:    ${workspace.getAgents().length} detected`);
   console.log(`  → API:       /api/agents, /api/zones, /api/tasks, /api/workspace`);
   console.log('');
 

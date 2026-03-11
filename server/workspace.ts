@@ -54,7 +54,7 @@ class WorkspaceManager {
       name: opts.name,
       type: opts.type,
       color,
-      size: opts.size ?? 0.4,
+      size: opts.size ?? 1.2,
       position: { x: spawnX, y: 0, z: spawnZ },
       targetPosition: { x: spawnX, y: 0, z: spawnZ },
       status: 'idle',

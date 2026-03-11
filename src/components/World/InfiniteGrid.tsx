@@ -18,17 +18,16 @@ const InfiniteGrid: React.FC<InfiniteGridProps> = ({ isDarkMode }) => {
         infiniteGrid
         followCamera
 
-        cellSize={1.0}
-        cellThickness={0.6}
+        cellSize={2}
+        cellThickness={0.8}
         cellColor={gridColor}
 
-        sectionSize={1.0}
-        sectionThickness={0.6}
-        sectionColor={gridColor}
+        sectionSize={10}
+        sectionThickness={1.2}
+        sectionColor={isDarkMode ? COLORS.GRID_SECTION_DARK : COLORS.GRID_SECTION}
 
-        // Large fade so edges dissolve well before any hard cutoff
-        fadeDistance={1500}
-        fadeStrength={3.0}
+        fadeDistance={400}
+        fadeStrength={1.5}
 
         renderOrder={-1}
         position={[0, -0.01, 0]}

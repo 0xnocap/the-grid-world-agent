@@ -19,6 +19,8 @@ const CameraControls: React.FC = () => {
   const cameraMode = useWorkspaceStore((s) => s.cameraMode);
   const followAgentId = useWorkspaceStore((s) => s.followAgentId);
   const agents = useWorkspaceStore((s) => s.agents);
+  const cameraTarget = useWorkspaceStore((s) => s.cameraTarget);
+  const setCameraTarget = useWorkspaceStore((s) => s.setCameraTarget);
 
   const keysPressed = useRef<Set<string>>(new Set());
 
@@ -61,8 +63,24 @@ const CameraControls: React.FC = () => {
       controlsRef.current.update();
     }
 
-    // Free mode: arrow keys pan camera
-    if (cameraMode === 'free' && keysPressed.current.size > 0) {
+    // Minimap click-to-navigate: smoothly pan camera to clicked world position
+    if (cameraTarget) {
+      const targetVec = new THREE.Vector3(cameraTarget.x, 0, cameraTarget.z);
+      const offset = camera.position.clone().sub(controlsRef.current.target);
+      const newCamPos = targetVec.clone().add(offset);
+
+      camera.position.lerp(newCamPos, 0.08);
+      controlsRef.current.target.lerp(targetVec, 0.08);
+      controlsRef.current.update();
+
+      // Clear target once close enough
+      if (controlsRef.current.target.distanceTo(targetVec) < 0.5) {
+        setCameraTarget(null);
+      }
+    }
+
+    // Arrow keys pan camera in any mode
+    if (keysPressed.current.size > 0) {
       const dist = camera.position.distanceTo(controlsRef.current.target);
       const speed = dist * 0.8;
       const forward = new THREE.Vector3();
@@ -124,7 +142,8 @@ interface WorldSceneProps {
 }
 
 const WorldScene: React.FC<WorldSceneProps> = ({ onFirstFrameRendered }) => {
-  const bgColor = COLORS.GROUND_DARK;
+  const isDarkMode = useWorkspaceStore((s) => s.isDarkMode);
+  const bgColor = isDarkMode ? COLORS.GROUND_DARK : COLORS.GROUND;
   const agents = useWorkspaceStore((s) => s.agents);
   const zones = useWorkspaceStore((s) => s.zones);
   const openInspector = useWorkspaceStore((s) => s.openInspector);
@@ -155,7 +174,7 @@ const WorldScene: React.FC<WorldSceneProps> = ({ onFirstFrameRendered }) => {
     <div className="w-full h-full cursor-crosshair">
       <Canvas
         shadows
-        camera={{ position: [60, 60, 60], fov: 20, near: 5, far: 3000 }}
+        camera={{ position: [40, 35, 40], fov: 45, near: 1, far: 3000 }}
         gl={{
           antialias: true,
           alpha: false,
@@ -186,7 +205,7 @@ const WorldScene: React.FC<WorldSceneProps> = ({ onFirstFrameRendered }) => {
             <meshBasicMaterial color={bgColor} />
           </mesh>
 
-          <InfiniteGrid isDarkMode />
+          <InfiniteGrid isDarkMode={isDarkMode} />
 
           {/* Project Zones */}
           {zones.map((zone) => (

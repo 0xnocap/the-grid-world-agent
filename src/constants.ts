@@ -1,13 +1,18 @@
 export const COLORS = {
-  // Dark Mode (default for workspace)
-  GROUND_DARK: '#0F1219',
-  GRID_DARK: '#1E2433',
-  GRID_SECTION_DARK: '#2A3346',
+  // Light Mode: Soft gray with visible grid
+  GROUND: '#D5DAE5',
+  GRID: '#8D96AD',
+  GRID_SECTION: '#737E99',
 
-  // Light Mode
-  GROUND: '#E8EBF0',
-  GRID: '#C4CAD6',
-  GRID_SECTION: '#A8B0C0',
+  // Dark Mode: Deep navy (Ralvi-style)
+  GROUND_DARK: '#181D2F',
+  GRID_DARK: '#2A3250',
+  GRID_SECTION_DARK: '#3D4768',
+
+  // Branding
+  PRIMARY: '#8B5CF6',
+  SECONDARY: '#10B981',
+  ACCENT: '#F59E0B',
 
   // Agent Type Colors
   CLAUDE: '#F97316',

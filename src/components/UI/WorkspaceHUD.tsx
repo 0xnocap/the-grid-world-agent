@@ -9,6 +9,8 @@ const WorkspaceHUD: React.FC = () => {
   const setCameraMode = useWorkspaceStore((s) => s.setCameraMode);
   const toggleMinimap = useWorkspaceStore((s) => s.toggleMinimap);
   const showMinimap = useWorkspaceStore((s) => s.showMinimap);
+  const isDarkMode = useWorkspaceStore((s) => s.isDarkMode);
+  const toggleDarkMode = useWorkspaceStore((s) => s.toggleDarkMode);
 
   const idleCount = agents.filter((a) => a.status === 'idle').length;
   const workingCount = agents.filter((a) => a.status === 'working').length;
@@ -27,21 +29,21 @@ const WorkspaceHUD: React.FC = () => {
       <div
         className="flex items-center justify-between px-4 py-2 pointer-events-auto"
         style={{
-          backgroundColor: 'rgba(15, 18, 25, 0.8)',
+          backgroundColor: isDarkMode ? 'rgba(24, 29, 47, 0.85)' : 'rgba(255, 255, 255, 0.85)',
           backdropFilter: 'blur(12px)',
-          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+          borderBottom: isDarkMode ? '1px solid rgba(255, 255, 255, 0.06)' : '1px solid rgba(0, 0, 0, 0.08)',
         }}
       >
         {/* Left: Branding + workspace path */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="w-1 h-4 bg-violet-500 rounded-full" />
-            <span className="text-xs font-bold text-white tracking-wider uppercase">
+            <span className={`text-xs font-bold tracking-wider uppercase ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>
               OpGrid
             </span>
           </div>
           {workspacePath && (
-            <span className="text-[10px] font-mono text-slate-500 max-w-[300px] truncate" title={workspacePath}>
+            <span className={`text-[10px] font-mono max-w-[300px] truncate ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`} title={workspacePath}>
               {workspacePath}
             </span>
           )}
@@ -75,17 +77,29 @@ const WorkspaceHUD: React.FC = () => {
         {/* Right: Controls */}
         <div className="flex items-center gap-2">
           {/* Zone count */}
-          <span className="text-[10px] text-slate-500 mr-1">
+          <span className={`text-[10px] mr-1 ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
             {zones.length} zone{zones.length !== 1 ? 's' : ''}
           </span>
+
+          {/* Dark mode toggle */}
+          <button
+            onClick={toggleDarkMode}
+            className={`text-[10px] px-2 py-1 rounded-md transition-colors ${
+              isDarkMode
+                ? 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'
+                : 'bg-black/5 text-slate-500 hover:bg-black/10 hover:text-slate-800'
+            }`}
+          >
+            {isDarkMode ? '☀' : '☾'}
+          </button>
 
           {/* Minimap toggle */}
           <button
             onClick={toggleMinimap}
             className={`text-[10px] px-2 py-1 rounded-md transition-colors ${
-              showMinimap
-                ? 'bg-white/10 text-white'
-                : 'bg-white/5 text-slate-500 hover:text-white'
+              isDarkMode
+                ? (showMinimap ? 'bg-white/10 text-white' : 'bg-white/5 text-slate-500 hover:text-white')
+                : (showMinimap ? 'bg-black/10 text-slate-800' : 'bg-black/5 text-slate-400 hover:text-slate-800')
             }`}
           >
             Map
@@ -94,7 +108,11 @@ const WorkspaceHUD: React.FC = () => {
           {/* Camera mode cycle */}
           <button
             onClick={cycleCameraMode}
-            className="text-[10px] px-2 py-1 rounded-md bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white transition-colors capitalize"
+            className={`text-[10px] px-2 py-1 rounded-md transition-colors capitalize ${
+              isDarkMode
+                ? 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'
+                : 'bg-black/5 text-slate-500 hover:bg-black/10 hover:text-slate-800'
+            }`}
           >
             {cameraMode}
           </button>

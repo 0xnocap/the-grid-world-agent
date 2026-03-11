@@ -52,7 +52,7 @@ const ProjectZone: React.FC<ProjectZoneProps> = ({ zone, onClick, onContextMenu 
         <meshBasicMaterial
           color={zone.color}
           transparent
-          opacity={0.08}
+          opacity={0.2}
           side={THREE.DoubleSide}
           depthWrite={false}
         />
@@ -80,7 +80,7 @@ const ProjectZone: React.FC<ProjectZoneProps> = ({ zone, onClick, onContextMenu 
         <meshBasicMaterial
           color={zone.color}
           transparent
-          opacity={0.04}
+          opacity={0.12}
           depthWrite={false}
         />
       </mesh>
@@ -88,8 +88,8 @@ const ProjectZone: React.FC<ProjectZoneProps> = ({ zone, onClick, onContextMenu 
       {/* Zone name text */}
       <Billboard follow lockX={false} lockY={false} lockZ={false}>
         <Text
-          position={[0, 2.2, 0]}
-          fontSize={0.5}
+          position={[0, 3.5, 0]}
+          fontSize={1.2}
           color="#e2e8f0"
           anchorX="center"
           anchorY="middle"
@@ -102,8 +102,8 @@ const ProjectZone: React.FC<ProjectZoneProps> = ({ zone, onClick, onContextMenu 
         {/* Language / Framework subtitle */}
         {subtitle && (
           <Text
-            position={[0, 1.7, 0]}
-            fontSize={0.28}
+            position={[0, 2.4, 0]}
+            fontSize={0.7}
             color="#94a3b8"
             anchorX="center"
             anchorY="middle"
@@ -117,8 +117,8 @@ const ProjectZone: React.FC<ProjectZoneProps> = ({ zone, onClick, onContextMenu 
         {/* File count badge */}
         {zone.fileCount != null && (
           <Text
-            position={[0, 1.3, 0]}
-            fontSize={0.2}
+            position={[0, 1.6, 0]}
+            fontSize={0.5}
             color="#64748b"
             anchorX="center"
             anchorY="middle"

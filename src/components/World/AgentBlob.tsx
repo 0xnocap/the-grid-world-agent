@@ -133,8 +133,8 @@ const AgentBlob: React.FC<AgentBlobProps> = ({ agent, onClick }) => {
       {/* Name label */}
       <Billboard follow lockX={false} lockY={false} lockZ={false}>
         <Text
-          position={[0, agentSize * 2 + 0.55, 0]}
-          fontSize={0.28}
+          position={[0, agentSize * 2 + 1.2, 0]}
+          fontSize={0.7}
           color="#cbd5e1"
           anchorX="center"
           anchorY="middle"
@@ -147,8 +147,8 @@ const AgentBlob: React.FC<AgentBlobProps> = ({ agent, onClick }) => {
         {/* Task preview text */}
         {taskPreview && (
           <Text
-            position={[0, agentSize * 2 + 0.2, 0]}
-            fontSize={0.16}
+            position={[0, agentSize * 2 + 0.4, 0]}
+            fontSize={0.45}
             color="#94a3b8"
             anchorX="center"
             anchorY="middle"

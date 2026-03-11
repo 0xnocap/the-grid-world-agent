@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { useWorkspaceStore } from '../../store';
 import { AGENT_TYPE_COLORS } from '../../constants';
 
@@ -9,9 +9,11 @@ const Minimap: React.FC = () => {
   const agents = useWorkspaceStore((s) => s.agents);
   const zones = useWorkspaceStore((s) => s.zones);
   const showMinimap = useWorkspaceStore((s) => s.showMinimap);
+  const setCameraTarget = useWorkspaceStore((s) => s.setCameraTarget);
+  const isDarkMode = useWorkspaceStore((s) => s.isDarkMode);
 
   // Calculate bounds and scale for all entities
-  const { scale, offsetX, offsetZ } = useMemo(() => {
+  const { scale, offsetX, offsetZ, centerX, centerZ } = useMemo(() => {
     const allX: number[] = [];
     const allZ: number[] = [];
 
@@ -25,7 +27,7 @@ const Minimap: React.FC = () => {
     }
 
     if (allX.length === 0) {
-      return { scale: 1, offsetX: 0, offsetZ: 0 };
+      return { scale: 1, offsetX: 0, offsetZ: 0, centerX: 0, centerZ: 0 };
     }
 
     const minX = Math.min(...allX);
@@ -42,8 +44,26 @@ const Minimap: React.FC = () => {
       scale: s,
       offsetX: -(minX + maxX) / 2,
       offsetZ: -(minZ + maxZ) / 2,
+      centerX: (minX + maxX) / 2,
+      centerZ: (minZ + maxZ) / 2,
     };
   }, [agents, zones]);
+
+  // Convert minimap click to world coordinates and move camera there
+  const handleClick = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      // Reverse the toMinimapX/Y formulas
+      const worldX = (clickX - MINIMAP_SIZE / 2) / scale - offsetX;
+      const worldZ = (clickY - MINIMAP_SIZE / 2) / scale - offsetZ;
+
+      setCameraTarget({ x: worldX, z: worldZ });
+    },
+    [scale, offsetX, offsetZ, setCameraTarget]
+  );
 
   if (!showMinimap) return null;
 
@@ -56,14 +76,15 @@ const Minimap: React.FC = () => {
       style={{
         width: MINIMAP_SIZE,
         height: MINIMAP_SIZE,
-        backgroundColor: 'rgba(15, 18, 25, 0.75)',
-        border: '1px solid rgba(255, 255, 255, 0.1)',
+        backgroundColor: isDarkMode ? 'rgba(24, 29, 47, 0.75)' : 'rgba(255, 255, 255, 0.75)',
+        border: isDarkMode ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid rgba(0, 0, 0, 0.1)',
         borderRadius: '8px',
         backdropFilter: 'blur(8px)',
         overflow: 'hidden',
+        cursor: 'pointer',
       }}
     >
-      <svg width={MINIMAP_SIZE} height={MINIMAP_SIZE}>
+      <svg width={MINIMAP_SIZE} height={MINIMAP_SIZE} onClick={handleClick}>
         {/* Zone diamonds */}
         {zones.map((zone) => {
           const cx = toMinimapX(zone.position.x);
