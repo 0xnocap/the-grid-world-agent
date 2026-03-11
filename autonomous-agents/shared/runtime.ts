@@ -456,7 +456,7 @@ async function callLLM(config: LLMConfig, systemPrompt: string, userPrompt: stri
 
 const ACTION_FORMAT = [
   'Decide your next action. Respond with EXACTLY one JSON object:',
-  '{ "thought": "...", "action": "MOVE|CHAT|SEND_DM|BUILD_BLUEPRINT|BUILD_CONTINUE|CANCEL_BUILD|BUILD_PRIMITIVE|BUILD_MULTI|TERMINAL|VOTE|SUBMIT_DIRECTIVE|COMPLETE_DIRECTIVE|TRANSFER_CREDITS|SCAVENGE|START_CERTIFICATION|ENCODE_SWAP|EXECUTE_ONCHAIN|APPROVE_TOKEN|SUBMIT_CERTIFICATION_PROOF|CHECK_CERTIFICATION|IDLE", "payload": {...} }',
+  '{ "thought": "...", "action": "MOVE|CHAT|SEND_DM|BUILD_BLUEPRINT|BUILD_CONTINUE|CANCEL_BUILD|TERMINAL|VOTE|SUBMIT_DIRECTIVE|COMPLETE_DIRECTIVE|TRANSFER_CREDITS|SCAVENGE|START_CERTIFICATION|ENCODE_SWAP|EXECUTE_ONCHAIN|APPROVE_TOKEN|SUBMIT_CERTIFICATION_PROOF|CHECK_CERTIFICATION|IDLE", "payload": {...} }',
   '',
   'Payload formats:',
   '  MOVE: {"x": 5, "z": 3}',
@@ -465,13 +465,9 @@ const ACTION_FORMAT = [
   '  BUILD_BLUEPRINT: {"name":"DATACENTER","anchorX":120,"anchorZ":120,"rotY":90}  ← USE coordinates from safe build spots! rotY optional (0-360)',
   '  BUILD_CONTINUE: {}  ← place next batch from active blueprint (must be near site)',
   '  CANCEL_BUILD: {}  ← abandon current blueprint (placed pieces stay)',
-  '  BUILD_PRIMITIVE: {"shape": "cylinder", "x": 100, "y": 1, "z": 100, "scaleX": 2, "scaleY": 2, "scaleZ": 2, "rotX": 0, "rotY": 0, "rotZ": 0, "color": "#3b82f6"}',
-  '  BUILD_MULTI: {"primitives": [{"shape":"cylinder","x":100,"y":1,"z":100,"scaleX":1,"scaleY":2,"scaleZ":1,"color":"#3b82f6"},{"shape":"cone","x":100,"y":3,"z":100,"scaleX":2,"scaleY":2,"scaleZ":2,"color":"#f59e0b"}]}  ← up to 5 per tick',
-  '    Available shapes: box, sphere, cone, cylinder, plane, torus, dodecahedron, icosahedron, octahedron, torusKnot, capsule',
+  '  (BUILD_PRIMITIVE and BUILD_MULTI exist but are deprecated — use BUILD_BLUEPRINT for all construction)',
   '  SCAVENGE: {}  ← gather materials from the world (1 min cooldown). Scavenger class gets bonus yield.',
-  '  TRANSFER_CREDITS: {"toAgentId": "agent_xxx", "amount": 25}',
-  '    **USE VARIETY:** Do NOT just build boxes. Use cylinders for pillars, cones for roofs, spheres for decorations, torus for rings.',
-  '    **STACKING GUIDE:** ground_y = scaleY / 2. Stacking: next_y = prev_y + prev_scaleY/2 + new_scaleY/2.',
+  '  TRANSFER_CREDITS: {"toAgentId": "agent_xxx", "amount": 25}  ← trade materials/credits with other agents',
   '  TERMINAL: {"message": "Status update..."}',
   '  VOTE: {"directiveId": "dir_xxx", "vote": "yes"}',
   '  SUBMIT_DIRECTIVE: {"description": "[Title] Description...", "agentsNeeded": 2, "hoursDuration": 24}',
@@ -486,10 +482,9 @@ const ACTION_FORMAT = [
   '',
   '**BUILD ZONE RULE:** You MUST NOT build within 50 units of origin (0,0).',
   '**BUILD DISTANCE RULE:** You must be within 20 units of target coordinates to build. MOVE first, THEN build.',
-  '**PROXIMITY RULE:** BUILD_MULTI/BUILD_PRIMITIVE coordinates must be AT LEAST 3 units away from YOUR position in X or Z. If you are at (-220,-660), build at (-223,-660) or (-217,-663), NOT at (-220,-660). "Too close" errors waste ticks.',
-  '**EFFICIENCY:** BUILD_BLUEPRINT is your PRIMARY build tool — use it for ALL structures (15-50 prims). BUILD_MULTI is ONLY for tiny decorative art (max 5 prims). If you want to contribute meaningfully, BUILD_BLUEPRINT + BUILD_CONTINUE. A single BUILD_BLUEPRINT places more than 3 rounds of BUILD_MULTI.',
+  '**BUILD BLUEPRINT FLOW:** 1) Check BUILD CONTEXT in your tick prompt — it shows available blueprints for your location. 2) Pick the biggest blueprint you can afford. 3) Use a safe build spot near the node center. 4) BUILD_BLUEPRINT to start. 5) BUILD_CONTINUE every tick until done. 6) Pick next blueprint, repeat.',
+  '**DENSIFY FIRST:** Build near existing nodes. Do NOT scatter to new locations until a node has 25+ structures.',
   'You can build any time you have credits. Directives are ONLY for organizing group projects.',
-  '**BUILD CONTEXT:** The BUILD CONTEXT section in your tick prompt is auto-fetched for your current position. Use the safe spots listed there.',
   '**ANTI-LOOP:** If your last 3+ actions were the same type AND failed, switch to something completely different. Move to new coordinates, try a different action, or IDLE.',
   '**NO TERMINAL SPAM:** TERMINAL is for significant events only. If you just sent a TERMINAL, do NOT send another. Take action instead.',
 ].join('\n');
@@ -1304,45 +1299,22 @@ export async function startAgent(config: AgentConfig): Promise<void> {
       const onchainRep = (self as any)?.onchainReputation || 0;
       const reputation = localRep + onchainRep;
 
-      // c. Refresh blueprint catalog periodically
+      // c. Blueprint catalog is now derived from build-context (dynamic, location-aware)
+      // We still keep a minimal fallback catalog in case build-context fails
       if (tickCount - blueprintCacheTick >= BLUEPRINT_REFRESH || !cachedBlueprintCatalog) {
         try {
           const bps = await api.getBlueprints();
-          let entries = Object.entries(bps || {}).slice(0, 30);
-          // Sort: hard first (biggest impact), then medium, then easy
-          const diffOrder: Record<string, number> = { hard: 0, medium: 1, easy: 2 };
-          entries.sort(([, a]: [string, any], [, b]: [string, any]) =>
-            (diffOrder[(a as any).difficulty] ?? 3) - (diffOrder[(b as any).difficulty] ?? 3)
-          );
-          // Only show 15+ prim blueprints
-          entries = entries.filter(([, bp]: [string, any]) => (bp.totalPrimitives || 0) >= 15);
+          const entries = Object.entries(bps || {}).slice(0, 30);
           cachedBlueprintCatalog = [
-            '## ⚠️ BLUEPRINT CATALOG — USE THESE EXACT NAMES ⚠️',
-            '❌ DO NOT invent blueprint names. DO NOT guess. ONLY use names from this list.',
-            '❌ Names like TOWER, POWER_STATION, NETWORK_HUB, ART_INSTALLATION, CRYSTAL_GARDEN DO NOT EXIST.',
-            '✅ VALID NAMES (copy exactly):',
-            ...entries.map(([name, bp]: [string, any]) => {
-              const parts = [`  → ${name}: ${bp.category || '?'} (${bp.totalPrimitives || '?'} prims, ${bp.difficulty || '?'})`];
-              if (bp.materialCost && typeof bp.materialCost === 'object') {
-                const costs = Object.entries(bp.materialCost).map(([k, v]) => `${k}:${v}`).join(', ');
-                parts.push(`[costs: ${costs}]`);
-              } else {
-                parts.push('[free]');
-              }
-              if (bp.minNodeTier) parts.push(`[requires: ${bp.minNodeTier}]`);
-              return parts.join(' ');
-            }),
-            '',
-            '🏆 BUILD BIG: MEGA_CITADEL(50) > MEGA_SKYSCRAPER(46) > COLOSSEUM(45) > CATHEDRAL(44) > OBELISK_TOWER(41) > SKYSCRAPER(38) > TITAN_STATUE(30) > MEGA_SERVER_SPIRE(25) > HIGH_RISE(25) > MANSION(15).',
-            '📍 DENSIFY: Build within 15-25 units of node center.',
-            '🎯 Use BUILD_BLUEPRINT with the EXACT name from this list. Then BUILD_CONTINUE to place pieces.',
-            '⚡ BUILD_MULTI is for custom art ONLY (max 5 prims/tick). For big structures, ALWAYS use BUILD_BLUEPRINT.',
+            '## BLUEPRINT NAMES (use EXACT names with BUILD_BLUEPRINT)',
+            '❌ DO NOT invent names. ONLY use names from this list or from BUILD CONTEXT below.',
+            '✅ ' + entries.map(([name]) => name).join(', '),
           ].join('\n');
           blueprintCacheTick = tickCount;
         } catch { /* keep cached */ }
       }
 
-      // d. Fetch build context for current position
+      // d. Fetch build context for current position (includes available blueprints)
       let buildContextHint = '';
       if (self) {
         try {
@@ -1351,49 +1323,76 @@ export async function startAgent(config: AgentConfig): Promise<void> {
           if (bcRes.ok) {
             const bc = await bcRes.json() as any;
             const lines: string[] = [];
-            // Growth stage and guidance (new fields from enhanced API)
-            if (bc.nodeGrowthStage && bc.stageGuidance) {
-              const tierInfo = bc.structuresToNextTier > 0 ? ` (${bc.structuresToNextTier} to next tier)` : '';
-              lines.push(`Growth stage: ${bc.nodeGrowthStage}${tierInfo}`);
-            }
+
+            // 1. NODE STATUS
             if (bc.nearestNode) {
-              lines.push(`Nearest node: "${bc.nearestNode.name}" (${bc.nearestNode.tier}, ${bc.nearestNode.structures} structures)`);
+              lines.push(`## NODE: "${bc.nearestNode.name}" (${bc.nearestNode.tier}, ${bc.nearestNode.structures} structures, ${bc.nearestNode.distance}u away)`);
+            } else {
+              lines.push('## NO NEARBY NODE — found a new settlement with a big anchor build');
+            }
+            if (bc.nodeGrowthStage && bc.stageGuidance) {
+              const tierInfo = bc.structuresToNextTier > 0 ? ` (${bc.structuresToNextTier} more to next tier)` : '';
+              lines.push(`Stage: ${bc.nodeGrowthStage}${tierInfo}`);
+              lines.push(`${bc.stageGuidance}`);
             }
             if (bc.categoriesMissing?.length > 0) {
-              lines.push(`Missing categories: ${bc.categoriesMissing.join(', ')}`);
+              lines.push(`Missing categories: ${bc.categoriesMissing.join(', ')} — build these for diversity!`);
             }
-            if (bc.stageGuidance) {
-              lines.push(`Guidance: ${bc.stageGuidance}`);
+
+            // 2. AVAILABLE BLUEPRINTS (filtered by node tier — the key guided info)
+            if (bc.availableBlueprints?.length > 0) {
+              const available = (bc.availableBlueprints as any[]).filter((bp: any) => bp.available);
+              const locked = (bc.availableBlueprints as any[]).filter((bp: any) => !bp.available);
+              // Sort available by prims descending (build big first)
+              available.sort((a: any, b: any) => (b.prims || 0) - (a.prims || 0));
+              lines.push('');
+              lines.push('## BLUEPRINTS YOU CAN BUILD HERE (pick one):');
+              for (const bp of available) {
+                const matStr = bp.materialCost ? ` [costs: ${Object.entries(bp.materialCost).map(([k,v]) => `${k}:${v}`).join(', ')}]` : ' [free]';
+                lines.push(`  ${bp.name}: ${bp.category} (${bp.prims} prims, ${bp.difficulty})${matStr}`);
+              }
+              if (locked.length > 0) {
+                lines.push(`Locked (${locked.length}): ${locked.map((bp: any) => `${bp.name} (${bp.reason})`).join(', ')}`);
+              }
+              lines.push('');
+              lines.push('BUILD BIG — pick the highest-prim blueprint you can afford. Use BUILD_BLUEPRINT with the EXACT name, then BUILD_CONTINUE each tick.');
             }
+
+            // 3. SAFE BUILD SPOTS
             if (bc.safeBuildSpots?.length > 0) {
-              lines.push('Safe build spots:');
+              lines.push('');
+              lines.push('## SAFE BUILD SPOTS (use these coordinates):');
               for (const s of bc.safeBuildSpots.slice(0, 4)) {
                 lines.push(`  (${s.x}, ${s.z}) [${s.type}] nearest: ${s.distToNearest}u`);
               }
             }
-            // Show material-based building tier the agent is in
+
+            // 4. MATERIAL GUIDANCE
             if (materials && typeof materials === 'object') {
               const totalMats = Object.values(materials as Record<string, number>).reduce((s, v) => s + (v || 0), 0);
-              if (totalMats >= 6) {
-                lines.push('🏗️ You have enough materials for HARD blueprints (14-50 prims). Check catalog for costs. Build the biggest you can!');
-              } else if (totalMats >= 2) {
-                lines.push('🔧 You have materials for MEDIUM blueprints (8-12 prims). SCAVENGE more for hard-tier builds.');
-              } else {
-                lines.push('💎 Low on materials. SCAVENGE first to unlock HARD-tier mega blueprints. If you must build now, pick the biggest free blueprint available (MANSION, HIGH_RISE).');
+              if (totalMats < 2) {
+                lines.push('');
+                lines.push('Low on materials. SCAVENGE to gather materials for bigger blueprints, or build a free blueprint now.');
               }
             }
-            // Explicit densification instruction based on node state
+
+            // 5. DENSIFICATION RULES
             if (bc.nearestNode) {
               const dist = bc.nearestNode.distance ?? 999;
               const sc = bc.nearestNode.structures ?? 0;
               if (dist > 50) {
-                lines.push('⚠️ You are FAR from any node. MOVE to the nearest node first (within 30 units), THEN build. Do NOT place isolated structures.');
+                lines.push('');
+                lines.push('⚠️ You are FAR from any node. MOVE to the nearest node center first, THEN build.');
               } else if (sc < 25) {
-                lines.push(`📍 DENSIFY this node! It has ${sc}/25 structures. Build NEAR the node center, within 15-25 units. Do NOT start a new node until this one reaches city tier (25).`);
+                lines.push('');
+                lines.push(`DENSIFY: This node has ${sc}/25 structures. Build NEAR the center (within 15-25u). Do NOT start a new node yet.`);
               }
-            } else {
-              lines.push('📍 No nearby node. Found a new settlement: place a MEGA anchor (MEGA_CITADEL, MEGA_SKYSCRAPER, CATHEDRAL, SKYSCRAPER). Go BIG.');
             }
+
+            // 6. BUILD METHODOLOGY (concise)
+            lines.push('');
+            lines.push('## BUILD METHOD: 1) Pick biggest available blueprint 2) Use safe build spot near node center 3) BUILD_BLUEPRINT 4) BUILD_CONTINUE every tick until done 5) Pick next blueprint, repeat');
+
             buildContextHint = lines.join('\n');
           }
         } catch { /* ok without */ }
