@@ -172,6 +172,10 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
       return reply.code(429).send({
         error: 'Rate limit exceeded',
         retryAfterMs: startLimit.retryAfterMs,
+        nextActions: [
+          `WAIT ${Math.ceil((startLimit.retryAfterMs || 60000) / 1000)}s before retrying certification.`,
+          'Do something else: BUILD, SCAVENGE, CHAT, or MOVE while waiting.',
+        ],
       });
     }
 
@@ -193,9 +197,15 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
     const passCount = await db.getCertificationPassCount(auth.agentId, parsed.data.templateId);
     if (passCount >= MAX_PASSES_PER_CERT) {
       return reply.code(403).send({
-        error: `You have already passed ${template.displayName} ${passCount} times (max ${MAX_PASSES_PER_CERT}). This certification is locked. Attempt a different certification or a higher tier.`,
+        error: `You have already passed ${template.displayName} ${passCount} times (max ${MAX_PASSES_PER_CERT}). This certification is locked. Attempt a different certification template.`,
         passCount,
         maxPasses: MAX_PASSES_PER_CERT,
+        nextActions: [
+          'Try a DIFFERENT certification template: GET /v1/certify/templates to see all available certifications.',
+          'Available templates: SWAP_EXECUTION_V1, SWAP_EXECUTION_V2, SNIPER_V1, DEPLOYER_V1.',
+          'Use START_CERTIFICATION with a different templateId.',
+          'Or focus on building — SCAVENGE for credits and use GET /v1/grid/build-context for build spots.',
+        ],
       });
     }
 
