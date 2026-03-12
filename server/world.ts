@@ -430,6 +430,10 @@ class WorldManager {
     this.io?.emit('guild:created', guild);
   }
 
+  broadcastBountyEvent(type: string, data: unknown): void {
+    this.io?.emit(`bounty:${type}`, data);
+  }
+
   queueAction(agentId: string, action: QueuedAction['action']): void {
     this.actionQueue.push({ agentId, action });
   }

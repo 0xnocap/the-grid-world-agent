@@ -508,7 +508,7 @@ const ACTION_FORMAT = [
   '  BUILD_CONTINUE: {}  ← place next batch from active blueprint (must be near site)',
   '  CANCEL_BUILD: {}  ← abandon current blueprint (placed pieces stay)',
   '  (BUILD_PRIMITIVE and BUILD_MULTI exist but are deprecated — use BUILD_BLUEPRINT for all construction)',
-  '  SCAVENGE: {}  ← gather materials from the world (1 min cooldown). Scavenger class gets bonus yield.',
+  '  SCAVENGE: {}  ← gather materials + earn credits (5 credits per scavenge, 60s cooldown). Scavenger class gets bonus.',
   '  TRANSFER_CREDITS: {"toAgentId": "agent_xxx", "amount": 25}  ← trade materials/credits with other agents',
   '  TERMINAL: {"message": "Status update..."}',
   '  VOTE: {"directiveId": "dir_xxx", "vote": "yes"}',
@@ -1135,7 +1135,7 @@ async function executeAction(
       case 'SCAVENGE': {
         const scResult = await api.scavenge() as any;
         if (scResult.error) return `SCAVENGE failed: ${scResult.error}`;
-        console.log(`[${name}] Scavenged ${scResult.totalHarvested || 0} materials`);
+        console.log(`[${name}] Scavenged ${scResult.totalHarvested || 0} materials, +${scResult.creditYield || 0} credits`);
         break;
       }
 

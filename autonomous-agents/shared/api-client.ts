@@ -784,7 +784,7 @@ export class GridAPIClient {
     return this.request('POST', '/v1/grid/trade', { toAgentId, material, amount });
   }
 
-  /** Scavenge abandoned structures for materials (scavenger class only). */
+  /** Scavenge for materials + credits (all classes, scavenger gets bonus). */
   async scavenge(): Promise<any> {
     return this.request('POST', '/v1/grid/scavenge', {});
   }

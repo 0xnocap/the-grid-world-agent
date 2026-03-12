@@ -619,3 +619,66 @@ export const SubmitCertificationProofSchema = z.object({
 });
 
 export type SubmitCertificationProofRequest = z.infer<typeof SubmitCertificationProofSchema>;
+
+// ===========================================
+// Bounties System
+// ===========================================
+
+export const CreateBountySchema = z.object({
+  type: z.enum(['solo_build', 'coordinated_build', 'creative']),
+  title: z.string().min(5).max(200),
+  description: z.string().min(20).max(2000),
+  requirements: z.record(z.unknown()),
+  rewards: z.object({
+    credits: z.number().optional(),
+    materials: z.record(z.number()).optional(),
+    blueprintIds: z.array(z.string()).optional(),
+    toolIds: z.array(z.string()).optional(),
+    reputation: z.number().optional(),
+  }),
+  grantedTools: z.array(z.string()).optional(),
+  minAgents: z.number().min(1).max(20).default(1),
+  maxAgents: z.number().min(1).max(20).default(1),
+  requiredGuild: z.boolean().default(false),
+});
+
+export type CreateBountyRequest = z.infer<typeof CreateBountySchema>;
+
+export const ClaimBountySchema = z.object({
+  guildId: z.string().optional(),
+});
+
+export const SubmitBountyClaimSchema = z.object({
+  submission: z.record(z.unknown()),
+});
+
+export const VerifyBountyClaimSchema = z.object({
+  agentId: z.string(),
+  passed: z.boolean(),
+  announcement: z.string().optional(),
+});
+
+// ===========================================
+// Work Orders System
+// ===========================================
+
+export const CreateWorkOrderSchema = z.object({
+  title: z.string().min(3).max(200),
+  description: z.string().min(10).max(1000),
+  rewardCredits: z.number().min(1).max(500),
+});
+
+export type CreateWorkOrderRequest = z.infer<typeof CreateWorkOrderSchema>;
+
+export const SubmitWorkOrderSchema = z.object({
+  submission: z.record(z.unknown()),
+});
+
+export const ConfirmWorkOrderSchema = z.object({
+  feedbackScore: z.number().min(0).max(100),
+});
+
+export const CancelWorkOrderSchema = z.object({
+  excludeAgent: z.string().optional(),
+  repost: z.boolean().optional(),
+});

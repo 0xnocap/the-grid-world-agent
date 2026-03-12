@@ -117,7 +117,7 @@ const NODE_CATEGORY_BASE: Exclude<NodeCategory, 'mixed'>[] = [
   'art',
   'nature',
 ];
-const NODE_EXPANSION_GATE = 25;
+const NODE_EXPANSION_GATE = 15;
 const TIER3_NODE_TIERS = new Set<NodeTier>(['city-node', 'metropolis-node', 'megaopolis-node']);
 
 const DIRECTION_LABELS: Record<string, string> = {
@@ -1348,6 +1348,10 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           distance: Math.round(distance),
           anchorX: body.anchorX,
           anchorZ: body.anchorZ,
+          nextActions: [
+            `MOVE to (${Math.round(body.anchorX)}, ${Math.round(body.anchorZ)}) — you are ${Math.round(distance)} units away, need to be within ${MAX_BUILD_DISTANCE}.`,
+            'Then retry the same BUILD command.',
+          ],
         });
       }
     }
@@ -1376,7 +1380,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       const combinedReputation = await db.getCombinedReputation(agentId);
       if (combinedReputation < 1) {
         return reply.code(403).send({
-          error: `Tier-3 blueprints require at least 1 certification pass. Current reputation: ${combinedReputation}. Complete a SWAP_EXECUTION_V1 certification first.`
+          error: `Tier-3 blueprints require at least 1 certification pass. Current reputation: ${combinedReputation}. Complete a SWAP_EXECUTION_V1 certification first.`,
+          nextActions: [
+            'Complete a certification first: GET /v1/certify/templates to browse available certifications.',
+            'Try building a simpler blueprint that does not require Tier-3 (e.g. shelter, watchtower, bridge).',
+            'Use GET /v1/grid/blueprints to see all available blueprints and their requirements.',
+          ],
         });
       }
     }
@@ -1391,7 +1400,13 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
         const nodeName = bestNode?.name ?? 'none nearby';
         const nodeTier = bestNode?.tier ?? 'none';
         return reply.code(403).send({
-          error: `This blueprint requires a nearby ${blueprint.minNodeTier} or higher. Nearest node "${nodeName}" is ${nodeTier}. Try placing it 50+ units from any existing node to found a new district, or build more structures to grow this node.`
+          error: `This blueprint requires a nearby ${blueprint.minNodeTier} or higher. Nearest node "${nodeName}" is ${nodeTier}. Try placing it 50+ units from any existing node to found a new district, or build more structures to grow this node.`,
+          nextActions: [
+            `Build more structures near "${nodeName}" to grow it to ${blueprint.minNodeTier} tier.`,
+            `Or place this blueprint 50+ units from any existing node to found a new district.`,
+            'Use GET /v1/grid/build-context to find growth-type safe spots near the node.',
+            'Try a simpler blueprint that does not require a high-tier node.',
+          ],
         });
       }
     }
@@ -1407,7 +1422,11 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const distFromOrigin = Math.sqrt(body.anchorX ** 2 + body.anchorZ ** 2);
     if (distFromOrigin < BUILD_CREDIT_CONFIG.MIN_BUILD_DISTANCE_FROM_ORIGIN) {
       return reply.code(403).send({
-        error: `Cannot build within ${BUILD_CREDIT_CONFIG.MIN_BUILD_DISTANCE_FROM_ORIGIN} units of the origin.`
+        error: `Cannot build within ${BUILD_CREDIT_CONFIG.MIN_BUILD_DISTANCE_FROM_ORIGIN} units of the origin.`,
+        nextActions: [
+          `MOVE further from origin — you need to be at least ${BUILD_CREDIT_CONFIG.MIN_BUILD_DISTANCE_FROM_ORIGIN} units away.`,
+          'Use GET /v1/grid/build-context to find safe build spots away from origin.',
+        ],
       });
     }
 
@@ -1416,7 +1435,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       const distToSettlement = distanceToNearestPrimitive(body.anchorX, body.anchorZ, existingWorldPrims);
       if (distToSettlement > BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT) {
         return reply.code(400).send({
-          error: `Blueprint anchor too far from any existing build (${distToSettlement.toFixed(0)} units). Place within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units of existing structures. Use GET /v1/grid/spatial-summary to find active neighborhoods.`
+          error: `Blueprint anchor too far from any existing build (${distToSettlement.toFixed(0)} units). Place within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units of existing structures.`,
+          nextActions: [
+            'Use GET /v1/grid/build-context to find safe spots near existing structures.',
+            'Use GET /v1/grid/spatial-summary to find active neighborhoods.',
+            `MOVE closer to an existing settlement — anchor must be within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units.`,
+          ],
         });
       }
       if (distToSettlement >= BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE) {
@@ -1430,7 +1454,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           );
           if (gate.blocked) {
             return reply.code(409).send({
-              error: `Expansion gate active: nearest node "${gate.nearestNodeName || 'unknown'}" has ${gate.nearestNodeCount || 0} structures. Densify a node to ${NODE_EXPANSION_GATE}+ structures before starting new frontier blueprints (${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE}-${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MAX_DISTANCE}u lanes).`,
+              error: `Expansion gate active: nearest node "${gate.nearestNodeName || 'unknown'}" has ${gate.nearestNodeCount || 0}/${NODE_EXPANSION_GATE} structures needed to unlock frontier expansion.`,
+              nextActions: [
+                `Build CLOSER to "${gate.nearestNodeName || 'the node'}" center (within ${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE}u) to densify it.`,
+                'Use GET /v1/grid/build-context to find growth-type safe spots near the node.',
+                'SCAVENGE for materials + credits if low on resources.',
+              ],
             });
           }
         }
@@ -1465,13 +1494,23 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       }
       if (missing.length > 0) {
         return reply.code(403).send({
-          error: `Insufficient materials for blueprint start: ${missing.join(', ')}`
+          error: `Insufficient materials for blueprint start: ${missing.join(', ')}`,
+          nextActions: [
+            'SCAVENGE to gather materials (60s cooldown). Scavenger class gets +25% yield.',
+            'Try a different blueprint that requires fewer or no materials — use GET /v1/grid/blueprints to browse.',
+            'Check your inventory with GET /v1/grid/materials.',
+          ],
         });
       }
       const credits = await db.getAgentCredits(agentId);
       if (credits < blueprintCreditCost) {
         return reply.code(403).send({
-          error: `Insufficient credits. Need ${blueprintCreditCost}, have ${credits}.`
+          error: `Insufficient credits. Need ${blueprintCreditCost}, have ${credits}.`,
+          nextActions: [
+            `SCAVENGE to earn credits (5 per scavenge, 8 for scavenger class, 60s cooldown).`,
+            `Try a smaller blueprint that costs fewer credits — use GET /v1/grid/blueprints to browse.`,
+            `Wait for daily credit refresh (${BUILD_CREDIT_CONFIG.DAILY_CREDITS} credits/day).`,
+          ],
         });
       }
       creditsPrepaid = true;
@@ -1479,7 +1518,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       const credits = await db.getAgentCredits(agentId);
       if (credits < blueprintCreditCost) {
         return reply.code(403).send({
-          error: `Insufficient credits. Need ${blueprintCreditCost}, have ${credits}.`
+          error: `Insufficient credits. Need ${blueprintCreditCost}, have ${credits}.`,
+          nextActions: [
+            `SCAVENGE to earn credits (5 per scavenge, 8 for scavenger class, 60s cooldown).`,
+            `Try a smaller blueprint that costs fewer credits — use GET /v1/grid/blueprints to browse.`,
+            `Wait for daily credit refresh (${BUILD_CREDIT_CONFIG.DAILY_CREDITS} credits/day).`,
+          ],
         });
       }
     }
@@ -1560,7 +1604,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       // AABB overlap test in XZ
       if (footMinX < epMaxX && footMaxX > epMinX && footMinZ < epMaxZ && footMaxZ > epMinZ) {
         return reply.code(409).send({
-          error: `Blueprint footprint overlaps existing geometry near (${ep.position.x.toFixed(1)}, ${ep.position.z.toFixed(1)}). Try a different anchor further away.`
+          error: `Blueprint footprint overlaps existing geometry near (${ep.position.x.toFixed(1)}, ${ep.position.z.toFixed(1)}). Try a different anchor further away.`,
+          nextActions: [
+            'Use GET /v1/grid/build-context to find pre-validated safe build spots with guaranteed clearance.',
+            `Pick an anchor at least 6 units away from (${ep.position.x.toFixed(1)}, ${ep.position.z.toFixed(1)}).`,
+            'Try rotating the blueprint (rotY parameter) to fit in available space.',
+          ],
         });
       }
     }
@@ -1570,7 +1619,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       if (reservedAgent === agentId) continue;
       if (footMinX < res.maxX && footMaxX > res.minX && footMinZ < res.maxZ && footMaxZ > res.minZ) {
         return reply.code(409).send({
-          error: `Blueprint footprint overlaps another agent's active build. Try a different anchor.`
+          error: `Blueprint footprint overlaps another agent's active build. Try a different anchor.`,
+          nextActions: [
+            'Use GET /v1/grid/build-context to find pre-validated safe build spots.',
+            'WAIT for the other agent to finish building, then retry.',
+            'Try a different location further from the active build zone.',
+          ],
         });
       }
     }
@@ -2695,13 +2749,17 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       if (found) harvested[found] += 1;
     }
 
+    // Credit recovery: scavenging yields a small credit bonus (5 base, scavenger gets 8)
+    const creditYield = isScavenger ? 8 : 5;
+    await db.addCreditsWithCap(agentId, creditYield, BUILD_CREDIT_CONFIG.CREDIT_CAP);
+
     const scavengerName = agent?.name || agentId;
     const bonusNote = isScavenger ? ' (scavenger bonus!)' : '';
     const scavengeEvent = await db.insertMessageEvent({
       agentId, agentName: scavengerName,
       source: 'system', kind: 'scavenge',
-      body: `🧲 ${scavengerName} scavenged ${totalHarvested} materials${bonusNote}`,
-      metadata: { totalHarvested, isScavenger },
+      body: `🧲 ${scavengerName} scavenged ${totalHarvested} materials + ${creditYield} credits${bonusNote}`,
+      metadata: { totalHarvested, creditYield, isScavenger },
     });
     world.broadcastEvent(scavengeEvent);
 
@@ -2709,6 +2767,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       success: true,
       harvested,
       totalHarvested,
+      creditYield,
       scavengerBonus: isScavenger,
     };
   });
@@ -3186,8 +3245,9 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       categoriesMissing = ALL_CATEGORIES.filter(c => !catSet.has(c));
     }
 
-    // Filter safe build spots by proximity to queried position (within 200 units)
+    // Filter safe build spots by proximity, overlap, and expansion gate
     const MAX_SPOT_DISTANCE = 200;
+    const MIN_CLEARANCE = 6; // minimum units of clearance from existing geometry
     const safeBuildSpots = openAreas
       .map(area => ({
         x: area.x,
@@ -3197,6 +3257,19 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
         distFromQuery: pointDistanceXZ({ x: area.x, z: area.z }, { x: reqX, z: reqZ }),
       }))
       .filter(s => s.distFromQuery <= MAX_SPOT_DISTANCE)
+      .filter(s => {
+        // Pre-validate: check expansion gate for frontier spots
+        if (s.type === 'frontier') {
+          const gate = getExpansionGateViolation(s.x, s.z, primitiveInput);
+          if (gate.blocked) return false;
+        }
+        return true;
+      })
+      .filter(s => {
+        // Pre-validate: check minimum clearance from existing geometry
+        const nearestDist = distanceToNearestPrimitive(s.x, s.z, primitiveInput);
+        return nearestDist >= MIN_CLEARANCE;
+      })
       .sort((a, b) => a.distFromQuery - b.distFromQuery)
       .slice(0, 8)
       .map(({ distFromQuery, ...rest }) => rest);
@@ -3294,7 +3367,10 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       } else if (sc <= 24) {
         nodeGrowthStage = 'young';
         structuresToNextTier = 25 - sc;
-        stageGuidance = `Young node "${nearestNode.name}" (${sc}/25 to city tier). Densify to 25 before expanding.${categoriesMissing.length > 0 ? ` Missing: ${categoriesMissing.join(', ')}.` : ''}`;
+        const canExpand = sc >= NODE_EXPANSION_GATE;
+        stageGuidance = canExpand
+          ? `Young node "${nearestNode.name}" (${sc} structures, expansion unlocked at ${NODE_EXPANSION_GATE}). Can densify further or start frontier builds.${categoriesMissing.length > 0 ? ` Missing: ${categoriesMissing.join(', ')}.` : ''}`
+          : `Young node "${nearestNode.name}" (${sc}/${NODE_EXPANSION_GATE} to unlock expansion). Densify to ${NODE_EXPANSION_GATE} before frontier builds.${categoriesMissing.length > 0 ? ` Missing: ${categoriesMissing.join(', ')}.` : ''}`;
       } else if (sc <= 49) {
         nodeGrowthStage = 'established';
         structuresToNextTier = 50 - sc;
@@ -3318,6 +3394,32 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       structuresToNextTier = 1;
     }
 
+    // Compute actionable next steps based on current situation
+    const nextActions: string[] = [];
+    if (insideOriginZone) {
+      nextActions.push(`MOVE away from origin (at least ${BUILD_CREDIT_CONFIG.MIN_BUILD_DISTANCE_FROM_ORIGIN} units).`);
+    } else if (!withinSettlementProximity) {
+      nextActions.push(`MOVE closer to existing structures (within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units).`);
+    } else if (safeBuildSpots.length > 0) {
+      const growthSpots = safeBuildSpots.filter(s => s.type === 'growth');
+      const frontierSpots = safeBuildSpots.filter(s => s.type === 'frontier');
+      if (growthSpots.length > 0) {
+        nextActions.push(`BUILD at growth spot (${growthSpots[0].x}, ${growthSpots[0].z}) to densify the node.`);
+      }
+      if (frontierSpots.length > 0) {
+        nextActions.push(`BUILD at frontier spot (${frontierSpots[0].x}, ${frontierSpots[0].z}) to expand.`);
+      }
+      if (categoriesMissing.length > 0) {
+        nextActions.push(`Build a ${categoriesMissing[0]} structure to diversify the node.`);
+      }
+    } else {
+      nextActions.push('No safe build spots available nearby. SCAVENGE for materials and credits (60s cooldown, +5 credits). CHAT with other agents. IDLE to wait for daily credit reset.');
+    }
+    // Always mention scavenge as an option if it's relevant
+    if (safeBuildSpots.length === 0 || (nearestNode && nearestNode.structureCount < NODE_EXPANSION_GATE && safeBuildSpots.filter(s => s.type === 'growth').length === 0)) {
+      nextActions.push('SCAVENGE to earn materials + credits while waiting for space to open up.');
+    }
+
     const result = {
       feasible,
       nearestNode: nearestNode ? {
@@ -3337,6 +3439,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       categoriesPresent,
       categoriesMissing,
       safeBuildSpots,
+      nextActions,
       constraints: {
         insideOriginZone,
         withinSettlementProximity,

@@ -702,8 +702,76 @@ export async function initDatabase(): Promise<void> {
         ALTER TABLE world_primitives ADD COLUMN IF NOT EXISTS material_type VARCHAR(20) DEFAULT NULL;
         ALTER TABLE certification_templates ADD COLUMN IF NOT EXISTS type VARCHAR(50) NOT NULL DEFAULT 'swap';
         ALTER TABLE certification_templates ADD COLUMN IF NOT EXISTS challenge JSONB NOT NULL DEFAULT '{}'::jsonb;
+        ALTER TABLE agents ADD COLUMN IF NOT EXISTS work_orders_completed INTEGER DEFAULT 0;
+        ALTER TABLE agents ADD COLUMN IF NOT EXISTS bounties_completed INTEGER DEFAULT 0;
       EXCEPTION WHEN others THEN NULL;
       END $$;
+    `);
+
+    // Bounties system
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bounties (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        type TEXT NOT NULL CHECK (type IN ('solo_build', 'coordinated_build', 'creative')),
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        requirements JSONB NOT NULL DEFAULT '{}',
+        rewards JSONB NOT NULL DEFAULT '{}',
+        granted_tools JSONB DEFAULT '[]',
+        min_agents INT NOT NULL DEFAULT 1,
+        max_agents INT NOT NULL DEFAULT 1,
+        required_guild BOOLEAN NOT NULL DEFAULT false,
+        status TEXT NOT NULL DEFAULT 'open'
+          CHECK (status IN ('open', 'in_progress', 'review', 'completed', 'cancelled')),
+        created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT,
+        completed_at BIGINT,
+        announcement TEXT
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bounty_claims (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        bounty_id UUID NOT NULL REFERENCES bounties(id),
+        agent_id TEXT NOT NULL,
+        guild_id TEXT,
+        status TEXT NOT NULL DEFAULT 'claimed'
+          CHECK (status IN ('claimed', 'submitted', 'verified', 'rejected')),
+        submission JSONB,
+        claimed_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT,
+        submitted_at BIGINT,
+        UNIQUE(bounty_id, agent_id)
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agent_unlocked_blueprints (
+        agent_id TEXT NOT NULL,
+        blueprint_id TEXT NOT NULL,
+        unlocked_by UUID REFERENCES bounties(id),
+        unlocked_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT,
+        PRIMARY KEY (agent_id, blueprint_id)
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS work_orders (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        issuer_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        reward_credits INT NOT NULL DEFAULT 0,
+        excluded_agents JSONB DEFAULT '[]',
+        claimer_id TEXT,
+        status TEXT NOT NULL DEFAULT 'open'
+          CHECK (status IN ('open', 'claimed', 'submitted', 'confirmed', 'cancelled')),
+        submission JSONB,
+        feedback_score INT,
+        created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT,
+        claimed_at BIGINT,
+        submitted_at BIGINT,
+        confirmed_at BIGINT
+      );
     `);
 
     // Entry fee tx hash tracking (prevents duplicate tx reuse)
@@ -755,6 +823,12 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_cert_runs_agent ON certification_runs(agent_id);
       CREATE INDEX IF NOT EXISTS idx_cert_runs_status ON certification_runs(status);
       CREATE INDEX IF NOT EXISTS idx_cert_runs_template ON certification_runs(template_id);
+      CREATE INDEX IF NOT EXISTS idx_bounties_status ON bounties(status);
+      CREATE INDEX IF NOT EXISTS idx_bounty_claims_bounty ON bounty_claims(bounty_id);
+      CREATE INDEX IF NOT EXISTS idx_bounty_claims_agent ON bounty_claims(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_work_orders_status ON work_orders(status);
+      CREATE INDEX IF NOT EXISTS idx_work_orders_issuer ON work_orders(issuer_id);
+      CREATE INDEX IF NOT EXISTS idx_work_orders_claimer ON work_orders(claimer_id);
     `);
 
     // Unique case-insensitive agent name constraint
@@ -3533,6 +3607,478 @@ export async function getAbandonedStructureCount(daysInactive = 7): Promise<numb
     [daysInactive]
   );
   return parseInt(result.rows[0]?.structure_count ?? '0', 10);
+}
+
+// ===========================================
+// Bounties System
+// ===========================================
+
+export interface BountyRow {
+  id: string;
+  type: string;
+  title: string;
+  description: string;
+  requirements: Record<string, unknown>;
+  rewards: Record<string, unknown>;
+  granted_tools: string[];
+  min_agents: number;
+  max_agents: number;
+  required_guild: boolean;
+  status: string;
+  created_at: number;
+  completed_at: number | null;
+  announcement: string | null;
+  claim_count?: number;
+}
+
+export interface BountyClaimRow {
+  id: string;
+  bounty_id: string;
+  agent_id: string;
+  guild_id: string | null;
+  status: string;
+  submission: Record<string, unknown> | null;
+  claimed_at: number;
+  submitted_at: number | null;
+}
+
+export async function createBounty(bounty: {
+  type: string;
+  title: string;
+  description: string;
+  requirements: Record<string, unknown>;
+  rewards: Record<string, unknown>;
+  grantedTools?: string[];
+  minAgents?: number;
+  maxAgents?: number;
+  requiredGuild?: boolean;
+}): Promise<BountyRow | null> {
+  if (!pool) return null;
+  const result = await pool.query<BountyRow>(
+    `INSERT INTO bounties (type, title, description, requirements, rewards, granted_tools, min_agents, max_agents, required_guild)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9)
+     RETURNING *`,
+    [
+      bounty.type, bounty.title, bounty.description,
+      JSON.stringify(bounty.requirements), JSON.stringify(bounty.rewards),
+      JSON.stringify(bounty.grantedTools || []),
+      bounty.minAgents ?? 1, bounty.maxAgents ?? 1, bounty.requiredGuild ?? false,
+    ]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function getBounty(id: string): Promise<(BountyRow & { claim_count: number }) | null> {
+  if (!pool) return null;
+  const result = await pool.query<BountyRow & { claim_count: number }>(
+    `SELECT b.*, (SELECT COUNT(*)::int FROM bounty_claims bc WHERE bc.bounty_id = b.id) AS claim_count
+     FROM bounties b WHERE b.id = $1`,
+    [id]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function getAllBounties(filters?: { type?: string; status?: string }): Promise<BountyRow[]> {
+  if (!pool) return [];
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+
+  if (filters?.type) {
+    conditions.push(`b.type = $${idx++}`);
+    params.push(filters.type);
+  }
+  if (filters?.status) {
+    conditions.push(`b.status = $${idx++}`);
+    params.push(filters.status);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await pool.query<BountyRow>(
+    `SELECT b.*, (SELECT COUNT(*)::int FROM bounty_claims bc WHERE bc.bounty_id = b.id) AS claim_count
+     FROM bounties b ${where} ORDER BY b.created_at DESC`,
+    params
+  );
+  return result.rows;
+}
+
+export async function getBountyClaimCount(bountyId: string): Promise<number> {
+  if (!pool) return 0;
+  const result = await pool.query<{ count: string }>(
+    'SELECT COUNT(*)::int AS count FROM bounty_claims WHERE bounty_id = $1',
+    [bountyId]
+  );
+  return parseInt(result.rows[0]?.count ?? '0', 10);
+}
+
+export async function claimBounty(
+  bountyId: string, agentId: string, guildId?: string
+): Promise<BountyClaimRow | null> {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const bountyResult = await client.query<BountyRow>(
+      'SELECT * FROM bounties WHERE id = $1 FOR UPDATE', [bountyId]
+    );
+    const bounty = bountyResult.rows[0];
+    if (!bounty || (bounty.status !== 'open' && bounty.status !== 'in_progress')) {
+      throw new Error('Bounty is not available for claiming');
+    }
+
+    const countResult = await client.query<{ count: string }>(
+      'SELECT COUNT(*)::int AS count FROM bounty_claims WHERE bounty_id = $1', [bountyId]
+    );
+    const claimCount = parseInt(countResult.rows[0]?.count ?? '0', 10);
+    if (claimCount >= bounty.max_agents) {
+      throw new Error('Bounty has reached maximum claims');
+    }
+
+    const claimResult = await client.query<BountyClaimRow>(
+      `INSERT INTO bounty_claims (bounty_id, agent_id, guild_id)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [bountyId, agentId, guildId || null]
+    );
+
+    if (claimCount + 1 >= bounty.min_agents && bounty.status === 'open') {
+      await client.query(
+        "UPDATE bounties SET status = 'in_progress' WHERE id = $1", [bountyId]
+      );
+    }
+
+    await client.query('COMMIT');
+    return claimResult.rows[0] ?? null;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getBountyClaim(bountyId: string, agentId: string): Promise<BountyClaimRow | null> {
+  if (!pool) return null;
+  const result = await pool.query<BountyClaimRow>(
+    'SELECT * FROM bounty_claims WHERE bounty_id = $1 AND agent_id = $2',
+    [bountyId, agentId]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function submitBountyClaim(
+  bountyId: string, agentId: string, submission: Record<string, unknown>
+): Promise<BountyClaimRow | null> {
+  if (!pool) return null;
+  const now = Date.now();
+  const result = await pool.query<BountyClaimRow>(
+    `UPDATE bounty_claims SET status = 'submitted', submission = $3::jsonb, submitted_at = $4
+     WHERE bounty_id = $1 AND agent_id = $2 AND status = 'claimed'
+     RETURNING *`,
+    [bountyId, agentId, JSON.stringify(submission), now]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function verifyBountyClaim(
+  bountyId: string, agentId: string, passed: boolean
+): Promise<void> {
+  if (!pool) return;
+  const newStatus = passed ? 'verified' : 'rejected';
+  await pool.query(
+    'UPDATE bounty_claims SET status = $3 WHERE bounty_id = $1 AND agent_id = $2',
+    [bountyId, agentId, newStatus]
+  );
+}
+
+export async function updateBountyStatus(bountyId: string, status: string, announcement?: string): Promise<void> {
+  if (!pool) return;
+  if (announcement) {
+    await pool.query(
+      'UPDATE bounties SET status = $2, announcement = $3, completed_at = $4 WHERE id = $1',
+      [bountyId, status, announcement, status === 'completed' ? Date.now() : null]
+    );
+  } else {
+    await pool.query(
+      'UPDATE bounties SET status = $2, completed_at = $3 WHERE id = $1',
+      [bountyId, status, status === 'completed' ? Date.now() : null]
+    );
+  }
+}
+
+export async function getBountyClaims(bountyId: string): Promise<BountyClaimRow[]> {
+  if (!pool) return [];
+  const result = await pool.query<BountyClaimRow>(
+    'SELECT * FROM bounty_claims WHERE bounty_id = $1 ORDER BY claimed_at ASC',
+    [bountyId]
+  );
+  return result.rows;
+}
+
+export async function getAgentBountyClaims(agentId: string): Promise<(BountyClaimRow & { bounty_title: string; bounty_type: string })[]> {
+  if (!pool) return [];
+  const result = await pool.query<BountyClaimRow & { bounty_title: string; bounty_type: string }>(
+    `SELECT bc.*, b.title AS bounty_title, b.type AS bounty_type
+     FROM bounty_claims bc JOIN bounties b ON b.id = bc.bounty_id
+     WHERE bc.agent_id = $1 ORDER BY bc.claimed_at DESC`,
+    [agentId]
+  );
+  return result.rows;
+}
+
+export async function incrementBountiesCompleted(agentId: string): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    'UPDATE agents SET bounties_completed = COALESCE(bounties_completed, 0) + 1 WHERE id = $1',
+    [agentId]
+  );
+}
+
+export async function unlockBlueprint(agentId: string, blueprintId: string, bountyId: string): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO agent_unlocked_blueprints (agent_id, blueprint_id, unlocked_by)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (agent_id, blueprint_id) DO NOTHING`,
+    [agentId, blueprintId, bountyId]
+  );
+}
+
+export async function getAgentUnlockedBlueprints(agentId: string): Promise<string[]> {
+  if (!pool) return [];
+  const result = await pool.query<{ blueprint_id: string }>(
+    'SELECT blueprint_id FROM agent_unlocked_blueprints WHERE agent_id = $1',
+    [agentId]
+  );
+  return result.rows.map(r => r.blueprint_id);
+}
+
+export async function getActiveBountyGrants(): Promise<Map<string, string[]>> {
+  if (!pool) return new Map();
+  const result = await pool.query<{ agent_id: string; granted_tools: string[] }>(
+    `SELECT bc.agent_id, b.granted_tools
+     FROM bounty_claims bc JOIN bounties b ON b.id = bc.bounty_id
+     WHERE bc.status = 'claimed' AND b.granted_tools != '[]'::jsonb`
+  );
+  const grants = new Map<string, string[]>();
+  for (const row of result.rows) {
+    const tools = Array.isArray(row.granted_tools) ? row.granted_tools : JSON.parse(row.granted_tools as unknown as string);
+    if (tools.length > 0) {
+      const existing = grants.get(row.agent_id) || [];
+      grants.set(row.agent_id, [...existing, ...tools]);
+    }
+  }
+  return grants;
+}
+
+// ===========================================
+// Work Orders System
+// ===========================================
+
+export interface WorkOrderRow {
+  id: string;
+  issuer_id: string;
+  title: string;
+  description: string;
+  reward_credits: number;
+  excluded_agents: string[];
+  claimer_id: string | null;
+  status: string;
+  submission: Record<string, unknown> | null;
+  feedback_score: number | null;
+  created_at: number;
+  claimed_at: number | null;
+  submitted_at: number | null;
+  confirmed_at: number | null;
+}
+
+export async function createWorkOrder(
+  issuerId: string, title: string, description: string, rewardCredits: number, cap: number
+): Promise<WorkOrderRow | null> {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const debitResult = await client.query(
+      'UPDATE agents SET build_credits = build_credits - $1 WHERE id = $2 AND build_credits >= $1',
+      [rewardCredits, issuerId]
+    );
+    if ((debitResult.rowCount ?? 0) === 0) {
+      throw new Error('Insufficient credits for work order escrow');
+    }
+
+    const result = await client.query<WorkOrderRow>(
+      `INSERT INTO work_orders (issuer_id, title, description, reward_credits)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [issuerId, title, description, rewardCredits]
+    );
+
+    await client.query('COMMIT');
+    return result.rows[0] ?? null;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getOpenWorkOrders(viewerAgentId: string): Promise<WorkOrderRow[]> {
+  if (!pool) return [];
+  const result = await pool.query<WorkOrderRow>(
+    "SELECT * FROM work_orders WHERE status = 'open' ORDER BY created_at DESC"
+  );
+  return result.rows.filter(wo => {
+    const excluded = Array.isArray(wo.excluded_agents)
+      ? wo.excluded_agents
+      : JSON.parse(wo.excluded_agents as unknown as string);
+    return !excluded.includes(viewerAgentId);
+  });
+}
+
+export async function getWorkOrder(id: string): Promise<WorkOrderRow | null> {
+  if (!pool) return null;
+  const result = await pool.query<WorkOrderRow>(
+    'SELECT * FROM work_orders WHERE id = $1', [id]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function claimWorkOrder(workOrderId: string, claimerAgentId: string): Promise<WorkOrderRow | null> {
+  if (!pool) return null;
+  const now = Date.now();
+  const result = await pool.query<WorkOrderRow>(
+    `UPDATE work_orders SET claimer_id = $2, status = 'claimed', claimed_at = $3
+     WHERE id = $1 AND status = 'open'
+     RETURNING *`,
+    [workOrderId, claimerAgentId, now]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function submitWorkOrder(
+  workOrderId: string, claimerAgentId: string, submission: Record<string, unknown>
+): Promise<WorkOrderRow | null> {
+  if (!pool) return null;
+  const now = Date.now();
+  const result = await pool.query<WorkOrderRow>(
+    `UPDATE work_orders SET status = 'submitted', submission = $3::jsonb, submitted_at = $4
+     WHERE id = $1 AND claimer_id = $2 AND status = 'claimed'
+     RETURNING *`,
+    [workOrderId, claimerAgentId, JSON.stringify(submission), now]
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function confirmWorkOrder(
+  workOrderId: string, issuerAgentId: string, feedbackScore: number, cap: number
+): Promise<WorkOrderRow | null> {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const woResult = await client.query<WorkOrderRow>(
+      'SELECT * FROM work_orders WHERE id = $1 AND issuer_id = $2 FOR UPDATE',
+      [workOrderId, issuerAgentId]
+    );
+    const wo = woResult.rows[0];
+    if (!wo || wo.status !== 'submitted') {
+      throw new Error('Work order not in submitted state or not owned by caller');
+    }
+
+    const now = Date.now();
+    await client.query(
+      `UPDATE work_orders SET status = 'confirmed', feedback_score = $2, confirmed_at = $3
+       WHERE id = $1`,
+      [workOrderId, feedbackScore, now]
+    );
+
+    await client.query(
+      'UPDATE agents SET build_credits = LEAST(build_credits + $1, $3) WHERE id = $2',
+      [wo.reward_credits, wo.claimer_id, cap]
+    );
+
+    await client.query(
+      'UPDATE agents SET work_orders_completed = COALESCE(work_orders_completed, 0) + 1 WHERE id = $1',
+      [wo.claimer_id]
+    );
+
+    await client.query('COMMIT');
+
+    return { ...wo, status: 'confirmed', feedback_score: feedbackScore, confirmed_at: now };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function cancelWorkOrder(
+  workOrderId: string, issuerAgentId: string, excludeAgent?: string
+): Promise<WorkOrderRow | null> {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const woResult = await client.query<WorkOrderRow>(
+      'SELECT * FROM work_orders WHERE id = $1 AND issuer_id = $2 FOR UPDATE',
+      [workOrderId, issuerAgentId]
+    );
+    const wo = woResult.rows[0];
+    if (!wo || (wo.status !== 'open' && wo.status !== 'claimed')) {
+      throw new Error('Work order cannot be cancelled');
+    }
+
+    await client.query(
+      'UPDATE agents SET build_credits = build_credits + $1 WHERE id = $2',
+      [wo.reward_credits, issuerAgentId]
+    );
+
+    await client.query(
+      "UPDATE work_orders SET status = 'cancelled' WHERE id = $1",
+      [workOrderId]
+    );
+
+    await client.query('COMMIT');
+    return { ...wo, status: 'cancelled' };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getAgentWorkOrders(agentId: string): Promise<WorkOrderRow[]> {
+  if (!pool) return [];
+  const result = await pool.query<WorkOrderRow>(
+    'SELECT * FROM work_orders WHERE issuer_id = $1 ORDER BY created_at DESC',
+    [agentId]
+  );
+  return result.rows;
+}
+
+export async function getAgentWorkClaims(agentId: string): Promise<WorkOrderRow[]> {
+  if (!pool) return [];
+  const result = await pool.query<WorkOrderRow>(
+    'SELECT * FROM work_orders WHERE claimer_id = $1 ORDER BY created_at DESC',
+    [agentId]
+  );
+  return result.rows;
+}
+
+export async function getAgentWorkOrdersCompleted(agentId: string): Promise<number> {
+  if (!pool) return 0;
+  const result = await pool.query<{ work_orders_completed: number }>(
+    'SELECT COALESCE(work_orders_completed, 0) AS work_orders_completed FROM agents WHERE id = $1',
+    [agentId]
+  );
+  return result.rows[0]?.work_orders_completed ?? 0;
 }
 
 export async function closeDatabase(): Promise<void> {
