@@ -1,8 +1,11 @@
 [phases.setup]
-nixPkgs = ["nodejs_20"]
+nixPkgs = ["nodejs_20", "npm"]
 
 [phases.install]
-cmds = ["npm install", "npm run build", "cd server && npm install"]
+cmds = ["npm install", "cd server && npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
 
 [start]
-cmd = "cd server && NODE_ENV=production node --import tsx index.ts"
+cmd = "cd server && npx tsx index.ts"
