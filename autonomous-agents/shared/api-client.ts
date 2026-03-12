@@ -681,6 +681,11 @@ export class GridAPIClient {
     return this.request('POST', `/v1/certify/runs/${runId}/submit`, { runId, proof });
   }
 
+  async getCertificationRunsWithProgress(): Promise<{ runs: CertificationRun[]; certifications?: Array<{ certificationId: string; displayName: string; passCount: number; maxPasses: number; locked: boolean; feeUsdcAtomic?: string }> }> {
+    const resp = await this.request<{ runs: CertificationRun[]; certifications?: Array<{ certificationId: string; displayName: string; passCount: number; maxPasses: number; locked: boolean; feeUsdcAtomic?: string }> }>('GET', '/v1/certify/runs');
+    return { runs: resp.runs || [], certifications: resp.certifications };
+  }
+
   async getCertificationRuns(): Promise<CertificationRun[]> {
     const resp = await this.request<{ runs: CertificationRun[] }>('GET', '/v1/certify/runs');
     return resp.runs || [];

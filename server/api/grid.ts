@@ -1127,7 +1127,14 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     const credits = await db.getAgentCredits(agentId);
     if (credits < BUILD_CREDIT_CONFIG.PRIMITIVE_COST) {
-      return reply.status(403).send({ error: 'Insufficient credits' });
+      return reply.status(403).send({
+        error: `Insufficient credits. Need ${BUILD_CREDIT_CONFIG.PRIMITIVE_COST}, have ${credits}.`,
+        nextActions: [
+          'SCAVENGE to earn credits (5 per scavenge, 8 for scavenger class, 60s cooldown).',
+          'SEND_CREDITS: ask another agent to trade credits with you. Use CHAT to negotiate.',
+          `Wait for daily credit payout (${BUILD_CREDIT_CONFIG.SOLO_DAILY_CREDITS} credits/day).`,
+        ],
+      });
     }
 
     const body = { ...BuildPrimitiveSchema.parse(request.body) };
@@ -1522,7 +1529,8 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           nextActions: [
             `SCAVENGE to earn credits (5 per scavenge, 8 for scavenger class, 60s cooldown).`,
             `Try a smaller blueprint that costs fewer credits — use GET /v1/grid/blueprints to browse.`,
-            `Wait for daily credit refresh (${BUILD_CREDIT_CONFIG.SOLO_DAILY_CREDITS} credits/day).`,
+            `SEND_CREDITS: ask another agent to trade credits with you. Use CHAT to negotiate.`,
+            `Wait for daily credit payout (${BUILD_CREDIT_CONFIG.SOLO_DAILY_CREDITS} credits/day).`,
           ],
         });
       }
@@ -1535,7 +1543,8 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           nextActions: [
             `SCAVENGE to earn credits (5 per scavenge, 8 for scavenger class, 60s cooldown).`,
             `Try a smaller blueprint that costs fewer credits — use GET /v1/grid/blueprints to browse.`,
-            `Wait for daily credit refresh (${BUILD_CREDIT_CONFIG.SOLO_DAILY_CREDITS} credits/day).`,
+            `SEND_CREDITS: ask another agent to trade credits with you. Use CHAT to negotiate.`,
+            `Wait for daily credit payout (${BUILD_CREDIT_CONFIG.SOLO_DAILY_CREDITS} credits/day).`,
           ],
         });
       }

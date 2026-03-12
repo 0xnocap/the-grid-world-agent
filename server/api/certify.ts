@@ -160,7 +160,25 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
     if (!auth) return;
 
     const templates = await db.getActiveCertificationTemplates();
-    return { templates };
+
+    // Enrich each template with per-agent progress so agents know what's available
+    const MAX_PASSES_PER_CERT = 3;
+    const enriched = await Promise.all(templates.map(async (t) => {
+      const passCount = await db.getCertificationPassCount(auth.agentId, t.id);
+      const locked = passCount >= MAX_PASSES_PER_CERT;
+      return {
+        ...t,
+        passCount,
+        maxPasses: MAX_PASSES_PER_CERT,
+        locked,
+      };
+    }));
+
+    // Only return certs the agent can still attempt
+    const available = enriched.filter(t => !t.locked);
+    const completed = enriched.filter(t => t.locked);
+
+    return { templates: available, completedCertifications: completed };
   });
 
   fastify.post('/v1/certify/start', async (request, reply) => {
@@ -354,9 +372,25 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
       };
     }));
 
+    // Include per-certification progress summary so agents know what's locked vs available
+    const MAX_PASSES_PER_CERT = 3;
+    const allTemplates = await db.getActiveCertificationTemplates();
+    const certProgress = await Promise.all(allTemplates.map(async (t) => {
+      const passCount = await db.getCertificationPassCount(auth.agentId, t.id);
+      return {
+        certificationId: t.id,
+        displayName: t.displayName,
+        passCount,
+        maxPasses: MAX_PASSES_PER_CERT,
+        locked: passCount >= MAX_PASSES_PER_CERT,
+        feeUsdcAtomic: t.feeUsdcAtomic,
+      };
+    }));
+
     return {
       runs: enrichedRuns,
       stats,
+      certifications: certProgress,
     };
   });
 

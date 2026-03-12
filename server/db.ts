@@ -2289,54 +2289,55 @@ export async function deductCredits(agentId: string, amount: number): Promise<bo
   return (result.rowCount ?? 0) > 0;
 }
 
-export async function resetDailyCredits(soloAmount: number, creditCap: number, externalAmount: number = 500): Promise<void> {
+export async function resetDailyCredits(soloAmount: number, _creditCap: number, externalAmount: number = 500): Promise<void> {
   if (!pool) return;
   const guildMultiplier = 1.5;
   const builderMultiplier = CLASS_BONUSES.builder.creditMultiplier; // 1.2
 
-  // External visitors always reset to their lower daily credit pool.
+  // Daily credit PAYOUT — additive, not a reset. Agents accumulate freely.
+  // External visitors get a smaller daily payout.
   await pool.query(
-    `UPDATE agents SET build_credits = LEAST($1::integer, $2::integer), credits_last_reset = NOW()
+    `UPDATE agents SET build_credits = build_credits + $1::integer, credits_last_reset = NOW()
      WHERE credits_last_reset < NOW() - INTERVAL '24 hours'
      AND COALESCE(is_external, FALSE) = TRUE`,
-    [Math.round(externalAmount), Math.round(externalAmount)]
+    [Math.round(externalAmount)]
   );
 
-  // Solo non-builder agents: base amount, capped
+  // Solo non-builder agents: base payout
   await pool.query(
-    `UPDATE agents SET build_credits = LEAST($1::integer, $2::integer), credits_last_reset = NOW()
+    `UPDATE agents SET build_credits = build_credits + $1::integer, credits_last_reset = NOW()
      WHERE credits_last_reset < NOW() - INTERVAL '24 hours'
      AND COALESCE(is_external, FALSE) = FALSE
      AND id NOT IN (SELECT agent_id FROM guild_members)
      AND (agent_class IS NULL OR agent_class != 'builder')`,
-    [Math.round(soloAmount), Math.round(creditCap)]
+    [Math.round(soloAmount)]
   );
-  // Solo builder agents: 1.2x amount, capped
+  // Solo builder agents: 1.2x payout
   await pool.query(
-    `UPDATE agents SET build_credits = LEAST($1::integer, $2::integer), credits_last_reset = NOW()
+    `UPDATE agents SET build_credits = build_credits + $1::integer, credits_last_reset = NOW()
      WHERE credits_last_reset < NOW() - INTERVAL '24 hours'
      AND COALESCE(is_external, FALSE) = FALSE
      AND id NOT IN (SELECT agent_id FROM guild_members)
      AND agent_class = 'builder'`,
-    [Math.round(soloAmount * builderMultiplier), Math.round(creditCap)]
+    [Math.round(soloAmount * builderMultiplier)]
   );
-  // Guild non-builder agents: 1.5x multiplier, capped
+  // Guild non-builder agents: 1.5x payout
   await pool.query(
-    `UPDATE agents SET build_credits = LEAST($1::integer, $2::integer), credits_last_reset = NOW()
+    `UPDATE agents SET build_credits = build_credits + $1::integer, credits_last_reset = NOW()
      WHERE credits_last_reset < NOW() - INTERVAL '24 hours'
      AND COALESCE(is_external, FALSE) = FALSE
      AND id IN (SELECT agent_id FROM guild_members)
      AND (agent_class IS NULL OR agent_class != 'builder')`,
-    [Math.round(soloAmount * guildMultiplier), Math.round(creditCap)]
+    [Math.round(soloAmount * guildMultiplier)]
   );
-  // Guild builder agents: 1.5x * 1.2x multiplier, capped
+  // Guild builder agents: 1.5x * 1.2x payout
   await pool.query(
-    `UPDATE agents SET build_credits = LEAST($1::integer, $2::integer), credits_last_reset = NOW()
+    `UPDATE agents SET build_credits = build_credits + $1::integer, credits_last_reset = NOW()
      WHERE credits_last_reset < NOW() - INTERVAL '24 hours'
      AND COALESCE(is_external, FALSE) = FALSE
      AND id IN (SELECT agent_id FROM guild_members)
      AND agent_class = 'builder'`,
-    [Math.round(soloAmount * guildMultiplier * builderMultiplier), Math.round(creditCap)]
+    [Math.round(soloAmount * guildMultiplier * builderMultiplier)]
   );
 }
 

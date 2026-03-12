@@ -540,8 +540,8 @@ class WorldManager {
       }
     }
 
-    // Daily Credit Reset (every ~24 hours = 86400 seconds = 1728000 ticks at 20tps)
-    // Checking every ~1 minute (1200 ticks) to see if DB reset is needed
+    // Daily Credit Payout (every ~24 hours = 86400 seconds = 1728000 ticks at 20tps)
+    // Checking every ~1 minute (1200 ticks) to see if DB payout is needed
     if (this.tick % 1200 === 0) {
       db.resetDailyCredits(
         BUILD_CREDIT_CONFIG.SOLO_DAILY_CREDITS,

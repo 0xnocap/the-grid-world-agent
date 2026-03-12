@@ -209,12 +209,12 @@ export interface WorldStateRow {
 // ===========================================
 
 export const BUILD_CREDIT_CONFIG = {
-  SOLO_DAILY_CREDITS: 1000,
+  SOLO_DAILY_CREDITS: 2000,
   EXTERNAL_DAILY_CREDITS: 500,
   GUILD_MULTIPLIER: 1.5,
   PRIMITIVE_COST: 2,
-  /** Hard ceiling — credits can never exceed this value. */
-  CREDIT_CAP: 1000,
+  /** Soft cap for addCreditsWithCap — set very high so agents can accumulate freely. */
+  CREDIT_CAP: 999_999,
   /** Cost to submit a directive. */
   DIRECTIVE_SUBMIT_COST: 25,
   /** Credits awarded to the directive submitter on completion. */

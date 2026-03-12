@@ -752,16 +752,20 @@ function buildTickPrompt(
   }
   sections.push('');
 
-  // Certification state
+  // Certification state — certTemplates only includes unlocked certs (server filters out maxed)
   if (certTemplates.length > 0 || certRuns.length > 0) {
     sections.push('# CERTIFICATIONS');
     if (certTemplates.length > 0) {
       sections.push('Available certifications: ' + certTemplates.map(t => {
         const name = t.id || t.displayName || 'unknown';
         const fee = t.feeUsdcAtomic ? `$${(Number(t.feeUsdcAtomic) / 1e6).toFixed(2)}` : '';
-        return fee ? `${name} (fee: ${fee} USDC)` : name;
+        const passes = (t as any).passCount != null ? ` ${(t as any).passCount}/${(t as any).maxPasses} passes` : '';
+        return `${name} (${fee ? fee + ',' : ''}${passes})`;
       }).join(', '));
       sections.push('Use CHECK_CERTIFICATION to see full details, or START_CERTIFICATION with a certificationId to begin.');
+    } else {
+      // All certs locked
+      sections.push('All available certifications completed! Check back when new certifications are added.');
     }
     const activeRuns = certRuns.filter(r => ['created', 'active', 'submitted', 'verifying'].includes(r.status));
     if (activeRuns.length > 0) {
@@ -772,18 +776,17 @@ function buildTickPrompt(
       }
     }
     const passedRuns = certRuns.filter(r => r.status === 'passed');
-    // Group by certification type
-    const passByType = new Map<string, number>();
-    for (const r of passedRuns) passByType.set(r.templateId, (passByType.get(r.templateId) || 0) + 1);
     if (passedRuns.length > 0) {
+      const passByType = new Map<string, number>();
+      for (const r of passedRuns) passByType.set(r.templateId, (passByType.get(r.templateId) || 0) + 1);
       const passDetails = Array.from(passByType.entries()).map(([id, n]) => `${id}: ${n}`).join(', ');
       sections.push(`Passed certifications: ${passedRuns.length} (${passDetails})`);
     }
-    // Show which certs they haven't attempted
+    // Show which certs they haven't attempted (only from available/unlocked certs)
     const attemptedTypes = new Set(certRuns.map(r => r.templateId));
     const unattempted = certTemplates.filter(t => !attemptedTypes.has(t.id));
     if (unattempted.length > 0) {
-      sections.push(`⚡ Not yet attempted: ${unattempted.map(t => t.id).join(', ')} — try these to expand your capabilities!`);
+      sections.push(`⚡ Not yet attempted: ${unattempted.map(t => t.id).join(', ')} — try these!`);
     }
     sections.push('');
   }
@@ -1128,9 +1131,30 @@ async function executeAction(
       }
 
       case 'CHECK_CERTIFICATION': {
-        const runs = await api.getCertificationRuns();
+        const { runs, certifications } = await api.getCertificationRunsWithProgress();
         const passed = runs.filter(r => r.status === 'passed').length;
         console.log(`[${name}] Cert runs: ${runs.length} total, ${passed} passed`);
+
+        const infoParts: string[] = [];
+
+        // Show per-certification progress (available vs locked)
+        if (certifications && certifications.length > 0) {
+          const available = certifications.filter(c => !c.locked);
+          const locked = certifications.filter(c => c.locked);
+          if (available.length > 0) {
+            infoParts.push('AVAILABLE CERTIFICATIONS: ' + available.map(c => {
+              const fee = c.feeUsdcAtomic ? `fee: ${(Number(c.feeUsdcAtomic) / 1e6).toFixed(2)} USDC` : '';
+              return `${c.certificationId} (${c.passCount}/${c.maxPasses} passes${fee ? ', ' + fee : ''})`;
+            }).join(', '));
+          }
+          if (locked.length > 0) {
+            infoParts.push('COMPLETED (locked): ' + locked.map(c => `${c.certificationId} (${c.passCount}/${c.maxPasses})`).join(', '));
+          }
+          if (available.length > 0) {
+            infoParts.push(`Use START_CERTIFICATION {"certificationId": "${available[0].certificationId}"} to begin.`);
+          }
+        }
+
         // Feed active run details back so LLM can see work orders
         const activeRuns = runs.filter(r => r.status === 'active' || r.status === 'created');
         if (activeRuns.length > 0) {
@@ -1147,8 +1171,13 @@ async function executeAction(
             }
             return parts.join(' | ');
           }).join('\n');
-          console.log(`[${name}] Active cert details:\n${details}`);
-          (decision as any)._certInfo = `[CERT_CHECK] ${details}`;
+          infoParts.push('ACTIVE RUNS:\n' + details);
+        }
+
+        const certInfo = infoParts.join('\n');
+        if (certInfo) {
+          console.log(`[${name}] Cert check:\n${certInfo}`);
+          (decision as any)._certInfo = `[CERT_CHECK]\n${certInfo}`;
         }
         break;
       }
