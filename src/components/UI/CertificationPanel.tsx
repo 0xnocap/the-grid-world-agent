@@ -103,12 +103,12 @@ const CertificationPanel: React.FC<CertificationPanelProps> = ({ isDarkMode }) =
             <div
               key={`${entry.agentId}:${entry.templateId}`}
               className={`grid grid-cols-[22px_1fr_44px_42px_40px] gap-1.5 px-3 py-2 text-[11px] transition-colors ${rowHover}`}
-              title={`${entry.templateId} • ${entry.passRate.toFixed(1)}% pass rate • avg ${entry.avgScore ?? 0}/100`}
+              title={`${entry.templateId.replace(/_/g, ' ')} • ${entry.passRate.toFixed(1)}% pass rate • avg ${entry.avgScore ?? 0}/100`}
             >
               <span className={`font-mono ${textMuted}`}>{index + 1}</span>
               <div className="min-w-0">
                 <div className={`truncate font-semibold ${textPrimary}`}>{entry.agentName}</div>
-                <div className={`truncate text-[9px] uppercase tracking-wide ${textMuted}`}>{entry.templateId}</div>
+                <div className={`truncate text-[9px] uppercase tracking-wide ${textMuted}`}>{entry.templateId.replace(/_/g, ' ')}</div>
               </div>
               <span className={`text-right font-mono ${entry.bestScore && entry.bestScore >= 70 ? 'text-emerald-400' : textPrimary}`}>
                 {entry.bestScore ?? '—'}
