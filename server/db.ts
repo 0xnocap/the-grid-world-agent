@@ -754,6 +754,7 @@ export async function initDatabase(): Promise<void> {
       );
     `);
 
+    // Work orders (agent-to-agent marketplace)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS work_orders (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -3719,6 +3720,7 @@ export async function claimBounty(
   try {
     await client.query('BEGIN');
 
+    // Check bounty status and limits
     const bountyResult = await client.query<BountyRow>(
       'SELECT * FROM bounties WHERE id = $1 FOR UPDATE', [bountyId]
     );
@@ -3727,6 +3729,7 @@ export async function claimBounty(
       throw new Error('Bounty is not available for claiming');
     }
 
+    // Check max agents
     const countResult = await client.query<{ count: string }>(
       'SELECT COUNT(*)::int AS count FROM bounty_claims WHERE bounty_id = $1', [bountyId]
     );
@@ -3735,6 +3738,7 @@ export async function claimBounty(
       throw new Error('Bounty has reached maximum claims');
     }
 
+    // Insert claim
     const claimResult = await client.query<BountyClaimRow>(
       `INSERT INTO bounty_claims (bounty_id, agent_id, guild_id)
        VALUES ($1, $2, $3)
@@ -3742,6 +3746,7 @@ export async function claimBounty(
       [bountyId, agentId, guildId || null]
     );
 
+    // Update bounty status if min agents reached
     if (claimCount + 1 >= bounty.min_agents && bounty.status === 'open') {
       await client.query(
         "UPDATE bounties SET status = 'in_progress' WHERE id = $1", [bountyId]
@@ -3787,7 +3792,7 @@ export async function verifyBountyClaim(
   if (!pool) return;
   const newStatus = passed ? 'verified' : 'rejected';
   await pool.query(
-    'UPDATE bounty_claims SET status = $3 WHERE bounty_id = $1 AND agent_id = $2',
+    `UPDATE bounty_claims SET status = $3 WHERE bounty_id = $1 AND agent_id = $2`,
     [bountyId, agentId, newStatus]
   );
 }
@@ -3901,6 +3906,7 @@ export async function createWorkOrder(
   try {
     await client.query('BEGIN');
 
+    // Deduct credits from issuer (escrow)
     const debitResult = await client.query(
       'UPDATE agents SET build_credits = build_credits - $1 WHERE id = $2 AND build_credits >= $1',
       [rewardCredits, issuerId]
@@ -3930,6 +3936,7 @@ export async function getOpenWorkOrders(viewerAgentId: string): Promise<WorkOrde
   const result = await pool.query<WorkOrderRow>(
     "SELECT * FROM work_orders WHERE status = 'open' ORDER BY created_at DESC"
   );
+  // Filter excluded_agents in application layer
   return result.rows.filter(wo => {
     const excluded = Array.isArray(wo.excluded_agents)
       ? wo.excluded_agents
@@ -3980,6 +3987,7 @@ export async function confirmWorkOrder(
   try {
     await client.query('BEGIN');
 
+    // Get work order
     const woResult = await client.query<WorkOrderRow>(
       'SELECT * FROM work_orders WHERE id = $1 AND issuer_id = $2 FOR UPDATE',
       [workOrderId, issuerAgentId]
@@ -3990,17 +3998,20 @@ export async function confirmWorkOrder(
     }
 
     const now = Date.now();
+    // Update work order
     await client.query(
       `UPDATE work_orders SET status = 'confirmed', feedback_score = $2, confirmed_at = $3
        WHERE id = $1`,
       [workOrderId, feedbackScore, now]
     );
 
+    // Release escrowed credits to claimer (capped)
     await client.query(
       'UPDATE agents SET build_credits = LEAST(build_credits + $1, $3) WHERE id = $2',
       [wo.reward_credits, wo.claimer_id, cap]
     );
 
+    // Increment claimer work_orders_completed
     await client.query(
       'UPDATE agents SET work_orders_completed = COALESCE(work_orders_completed, 0) + 1 WHERE id = $1',
       [wo.claimer_id]
@@ -4034,6 +4045,7 @@ export async function cancelWorkOrder(
       throw new Error('Work order cannot be cancelled');
     }
 
+    // Refund escrowed credits
     await client.query(
       'UPDATE agents SET build_credits = build_credits + $1 WHERE id = $2',
       [wo.reward_credits, issuerAgentId]

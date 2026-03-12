@@ -446,9 +446,8 @@ export async function publishWorkOrderFeedbackOnChain(params: {
       timestamp: Date.now(),
     })));
 
-    // Try to find the worker's token ID
-    const dbMod = await import('./db.js');
-    const workerAgent = await dbMod.getAgent(params.workerAgentId);
+    // Try to find the worker's token ID — if not available, skip onchain
+    const workerAgent = await import('./db.js').then(db => db.getAgent(params.workerAgentId));
     const workerTokenId = (workerAgent as Record<string, unknown>)?.erc8004_agent_id;
     if (!workerTokenId) {
       console.warn('[Chain] Worker agent has no token ID, skipping onchain feedback');

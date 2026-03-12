@@ -51,6 +51,8 @@ const AGENT_REGISTRY = envFirst('AGENT_REGISTRY') || 'eip155:84532:0x8004A818BFB
 
 // LLM keys from environment
 const GEMINI_KEY = envFirst('GEMINI_API_KEY');
+const GEMINI_KEY_2 = envFirst('GEMINI_API_KEY_2') || GEMINI_KEY;
+const GEMINI_KEY_3 = envFirst('GEMINI_API_KEY_3') || GEMINI_KEY;
 const ANTHROPIC_KEY = envFirst('ANTHROPIC_API_KEY');
 const OPENAI_KEY = envFirst('GPT_API_KEY', 'OPENAI_API_KEY');
 const MINIMAX_KEY = envFirst('MINI_MAX_API_KEY', 'MINIMAX_API_KEY');
@@ -109,8 +111,8 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('ORACLE_ID', 'ORACLE_AGENT_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'ORACLE_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
-    llmModel: 'google/gemini-2.5-flash',
-    llmApiKey: OPENCODE_KEY, // paid OpenRouter key — Gemini via OR has no direct quota limits
+    llmModel: 'stepfun/step-3.5-flash:free', // StepFun — 85.8 MMLU, 11B active, thinking model
+    llmApiKey: OPENCODE_KEY,
   },
   clank: {
     name: 'clank',
@@ -120,8 +122,8 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('CLANK_AGENT_ID', 'CLANK_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'CLANK_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
-    llmModel: 'z-ai/glm-4.5-air',
-    llmApiKey: OPENCODE_KEY, // paid OpenRouter key — paid model, no free-tier rate limits
+    llmModel: 'arcee-ai/trinity-large-preview:free', // Same — Arcee AI free, proven reliable
+    llmApiKey: OPENCODE_KEY,
   },
   mouse: {
     name: 'mouse',
@@ -131,8 +133,8 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('MOUSE_AGENT_ID', 'MOUSE_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'MOUSE_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
-    llmModel: 'google/gemini-2.5-flash-lite',
-    llmApiKey: OPENCODE_KEY, // paid OpenRouter key — cheaper model, still fast
+    llmModel: 'arcee-ai/trinity-large-preview:free', // OpenRouter free — key 1 project burned today
+    llmApiKey: OPENCODE_KEY,
   },
 };
 
