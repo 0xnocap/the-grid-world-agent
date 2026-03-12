@@ -649,7 +649,18 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
 
     // If agent provided their own amountOutMinimum, encode directly (skip options)
     if (body.amountOutMinimum != null) {
-      const amountOutMinimum = BigInt(String(body.amountOutMinimum));
+      // Handle floating-point values: if agent sends a decimal (e.g. 0.133 WETH),
+      // convert to wei (18 decimals). Integer strings pass through unchanged.
+      let amountOutMinimum: bigint;
+      const rawVal = String(body.amountOutMinimum);
+      if (rawVal.includes('.')) {
+        // Looks like a human-readable token amount — convert to wei (18 decimals for WETH)
+        const [whole, frac = ''] = rawVal.split('.');
+        const paddedFrac = frac.padEnd(18, '0').slice(0, 18);
+        amountOutMinimum = BigInt(whole || '0') * 10n ** 18n + BigInt(paddedFrac);
+      } else {
+        amountOutMinimum = BigInt(rawVal);
+      }
       const swapCalldata = iface.encodeFunctionData('exactInputSingle', [{
         tokenIn, tokenOut, fee, recipient: walletAddress, amountIn, amountOutMinimum, sqrtPriceLimitX96,
       }]);
