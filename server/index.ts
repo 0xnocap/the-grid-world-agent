@@ -14,6 +14,7 @@ import { registerSimulateRoutes } from './api/simulate.js';
 import { registerReputationRoutes } from './api/reputation.js';
 import { registerGridRoutes } from './api/grid.js';
 import { registerCertificationRoutes } from './api/certify.js';
+import { registerBountyRoutes } from './api/bounties.js';
 import { initChain } from './chain.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -169,6 +170,7 @@ async function main() {
   await registerReputationRoutes(fastify);
   await registerGridRoutes(fastify);
   await registerCertificationRoutes(fastify);
+  await registerBountyRoutes(fastify);
 
   // Serve static frontend in production (built files in ../dist)
   const distPath = join(__dirname, '..', 'dist');

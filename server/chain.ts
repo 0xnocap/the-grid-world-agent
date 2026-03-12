@@ -426,6 +426,51 @@ export async function publishCertificationFeedbackOnChain(params: {
   }
 }
 
+export async function publishWorkOrderFeedbackOnChain(params: {
+  workOrderId: string;
+  workerAgentId: string;
+  score: number;
+}): Promise<{ txHash: string } | null> {
+  if (!reputationRegistry || !relayer) {
+    console.warn('[Chain] Skipping work order feedback publish (REPUTATION_REGISTRY or RELAYER_PK missing)');
+    return null;
+  }
+
+  try {
+    const c = requireContractWrite(reputationRegistry, 'REPUTATION_REGISTRY');
+    const feedbackValue = Math.min(100, Math.max(0, Math.round(params.score)));
+    const feedbackHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify({
+      workOrderId: params.workOrderId,
+      workerAgentId: params.workerAgentId,
+      score: feedbackValue,
+      timestamp: Date.now(),
+    })));
+
+    // Try to find the worker's token ID — if not available, skip onchain
+    const workerAgent = await import('./db.js').then(db => db.getAgent(params.workerAgentId));
+    const workerTokenId = (workerAgent as Record<string, unknown>)?.erc8004_agent_id;
+    if (!workerTokenId) {
+      console.warn('[Chain] Worker agent has no token ID, skipping onchain feedback');
+      return null;
+    }
+
+    const tx = await c.giveFeedback(
+      BigInt(workerTokenId as string),
+      BigInt(feedbackValue),
+      0,
+      'work_order',
+      params.workOrderId,
+      '',
+      '',
+      feedbackHash
+    );
+    return { txHash: tx.hash };
+  } catch (error) {
+    console.warn('[Chain] Work order feedback publish failed (continuing locally):', error);
+    return null;
+  }
+}
+
 export async function publishCertificationValidationOnChain(params: {
   runId: string;
   agentTokenId: string;

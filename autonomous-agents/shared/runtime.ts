@@ -405,7 +405,7 @@ async function callOpenRouter(apiKey: string, model: string, systemPrompt: strin
   const timeout = setTimeout(() => controller.abort(), 120_000); // 2 min timeout
   try {
   // Not all free models support response_format — omit for models that reject it
-  const supportsJsonFormat = !model.includes('hermes-3') && !model.includes('trinity') && !model.includes('nemotron');
+  const supportsJsonFormat = !model.includes('hermes-3') && !model.includes('trinity') && !model.includes('nemotron') && !model.includes('step-3.5');
   // Thinking models (nemotron, step) need more max_tokens — reasoning uses ~3-6K tokens before content
   const isThinkingModel = model.includes('nemotron') || model.includes('step-3.5');
   const body: Record<string, any> = {

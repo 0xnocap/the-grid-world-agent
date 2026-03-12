@@ -110,9 +110,9 @@ const agents: Record<string, AgentDef> = {
     walletAddress: envFirst('ORACLE_WALLET'),
     erc8004AgentId: envFirst('ORACLE_ID', 'ORACLE_AGENT_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'ORACLE_HEARTBEAT_SECONDS'),
-    llmProvider: 'gemini',
-    llmModel: 'gemini-2.5-flash', // Key 2 — own fresh quota
-    llmApiKey: GEMINI_KEY_2,
+    llmProvider: 'openrouter',
+    llmModel: 'stepfun/step-3.5-flash:free', // StepFun — 85.8 MMLU, 11B active, thinking model
+    llmApiKey: OPENCODE_KEY,
   },
   clank: {
     name: 'clank',
@@ -121,9 +121,9 @@ const agents: Record<string, AgentDef> = {
     walletAddress: envFirst('CLANK_WALLET'),
     erc8004AgentId: envFirst('CLANK_AGENT_ID', 'CLANK_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'CLANK_HEARTBEAT_SECONDS'),
-    llmProvider: 'gemini',
-    llmModel: 'gemini-2.5-flash', // Key 3 — own fresh quota
-    llmApiKey: GEMINI_KEY_3,
+    llmProvider: 'openrouter',
+    llmModel: 'arcee-ai/trinity-large-preview:free', // Same — Arcee AI free, proven reliable
+    llmApiKey: OPENCODE_KEY,
   },
   mouse: {
     name: 'mouse',
@@ -133,7 +133,7 @@ const agents: Record<string, AgentDef> = {
     erc8004AgentId: envFirst('MOUSE_AGENT_ID', 'MOUSE_ID'),
     heartbeatSeconds: envSeconds(DEFAULT_HEARTBEAT_SECONDS, 'MOUSE_HEARTBEAT_SECONDS'),
     llmProvider: 'openrouter',
-    llmModel: 'arcee-ai/trinity-large-preview:free', // Arcee AI — Key 1 burned today, use free OR model
+    llmModel: 'arcee-ai/trinity-large-preview:free', // OpenRouter free — key 1 project burned today
     llmApiKey: OPENCODE_KEY,
   },
 };
