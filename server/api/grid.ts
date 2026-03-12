@@ -117,7 +117,7 @@ const NODE_CATEGORY_BASE: Exclude<NodeCategory, 'mixed'>[] = [
   'art',
   'nature',
 ];
-const NODE_EXPANSION_GATE = 25;
+const NODE_EXPANSION_GATE = 15;
 const TIER3_NODE_TIERS = new Set<NodeTier>(['city-node', 'metropolis-node', 'megaopolis-node']);
 
 const DIRECTION_LABELS: Record<string, string> = {
@@ -1180,7 +1180,12 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
         );
         if (gate.blocked) {
           return reply.status(409).send({
-            error: `Expansion gate active: nearest node "${gate.nearestNodeName || 'unknown'}" has ${gate.nearestNodeCount || 0} structures. Densify a node to ${NODE_EXPANSION_GATE}+ structures before placing new frontier builds (${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE}-${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MAX_DISTANCE}u lanes).`,
+            error: `Expansion gate active: nearest node "${gate.nearestNodeName || 'unknown'}" has ${gate.nearestNodeCount || 0}/${NODE_EXPANSION_GATE} structures needed to unlock frontier expansion.`,
+            nextActions: [
+              `Build CLOSER to "${gate.nearestNodeName || 'the node'}" center (within ${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE}u) to densify it.`,
+              'Use GET /v1/grid/build-context to find growth-type safe spots near the node.',
+              'SCAVENGE for materials + credits if low on resources.',
+            ],
           });
         }
       }
