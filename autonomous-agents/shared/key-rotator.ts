@@ -3,6 +3,10 @@
  *
  * Each LLMBucket is a key x model combination with its own independent rate limit.
  * On 429, the rotator immediately tries the next bucket instead of sleeping.
+ *
+ * Escalating cooldowns: if a bucket gets 429'd repeatedly, cooldown doubles each
+ * time (60s → 120s → 240s → ... up to 30min). This prevents hammering burned
+ * buckets with wasted API calls every tick. Resets daily.
  */
 
 export interface LLMBucket {
@@ -14,9 +18,10 @@ export interface LLMBucket {
 
 interface BucketState {
   bucket: LLMBucket;
-  cooldownUntil: number; // timestamp ms, 0 = available
+  cooldownUntil: number;   // timestamp ms, 0 = available
+  consecutiveHits: number; // how many 429s in a row (for escalating cooldown)
   usesToday: number;
-  lastResetDate: string; // "YYYY-MM-DD" for daily counter reset
+  lastResetDate: string;   // "YYYY-MM-DD" for daily counter reset
 }
 
 export interface LLMResponse {
@@ -28,10 +33,14 @@ function todayUTC(): string {
   return new Date().toISOString().split('T')[0];
 }
 
+// Max cooldown: 30 minutes. After that, the bucket is likely a daily limit
+// and will only recover at midnight UTC.
+const MAX_COOLDOWN_MS = 30 * 60 * 1000;
+
 export class KeyRotator {
   private states: BucketState[];
   private agentName: string;
-  private defaultCooldownMs: number;
+  private baseCooldownMs: number;
 
   constructor(opts: {
     agentName: string;
@@ -39,10 +48,11 @@ export class KeyRotator {
     defaultCooldownMs?: number;
   }) {
     this.agentName = opts.agentName;
-    this.defaultCooldownMs = opts.defaultCooldownMs ?? 60_000;
+    this.baseCooldownMs = opts.defaultCooldownMs ?? 60_000;
     this.states = opts.buckets.map(bucket => ({
       bucket,
       cooldownUntil: 0,
+      consecutiveHits: 0,
       usesToday: 0,
       lastResetDate: todayUTC(),
     }));
@@ -66,6 +76,7 @@ export class KeyRotator {
       const today = todayUTC();
       if (state.lastResetDate !== today) {
         state.usesToday = 0;
+        state.consecutiveHits = 0;
         state.lastResetDate = today;
       }
 
@@ -78,14 +89,24 @@ export class KeyRotator {
       try {
         const response = await callFn(state.bucket);
         state.usesToday++;
+        // Success — reset consecutive hit counter
+        state.consecutiveHits = 0;
         return { ...response, bucket: state.bucket };
       } catch (err) {
         lastError = err;
 
         if (isRateLimit(err)) {
-          state.cooldownUntil = Date.now() + this.defaultCooldownMs;
+          // Escalating cooldown: doubles each consecutive 429 on same bucket
+          // 60s → 120s → 240s → 480s → 960s → 1800s (capped at 30min)
+          state.consecutiveHits++;
+          const cooldownMs = Math.min(
+            this.baseCooldownMs * Math.pow(2, state.consecutiveHits - 1),
+            MAX_COOLDOWN_MS,
+          );
+          state.cooldownUntil = Date.now() + cooldownMs;
+          const cooldownSec = Math.ceil(cooldownMs / 1000);
           console.warn(
-            `[${this.agentName}] 429 on ${state.bucket.label} — cooldown ${Math.ceil(this.defaultCooldownMs / 1000)}s, trying next bucket...`
+            `[${this.agentName}] 429 on ${state.bucket.label} (hit #${state.consecutiveHits}, cooldown ${cooldownSec}s), trying next bucket...`
           );
           continue; // Immediately try next bucket
         }
@@ -129,7 +150,7 @@ export class KeyRotator {
       const cd = s.cooldownUntil > now
         ? `COOL(${Math.ceil((s.cooldownUntil - now) / 1000)}s)`
         : 'OK';
-      return `${s.bucket.label}:${cd}(${s.usesToday})`;
+      return `${s.bucket.label}:${cd}(${s.usesToday},h${s.consecutiveHits})`;
     }).join(' | ');
   }
 }

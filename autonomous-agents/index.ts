@@ -95,15 +95,15 @@ interface AgentDef {
 // Agents are staggered: Oracle→KEY_2, Clank→KEY_3, Mouse→KEY_1
 
 const GEMINI_POOL_ORACLE: LLMBucket[] = [
-  // Primary: best quality on dedicated key
+  // Primary: quality model on dedicated key (500 RPD — burns first)
   { provider: 'gemini', model: 'gemini-2.5-flash',              apiKey: GEMINI_KEY_2, label: '2.5-flash@K2' },
-  { provider: 'gemini', model: 'gemini-3-flash-preview',        apiKey: GEMINI_KEY_2, label: '3-flash@K2' },
-  // Cross-key: same quality model on other keys
-  { provider: 'gemini', model: 'gemini-2.5-flash',              apiKey: GEMINI_KEY,   label: '2.5-flash@K1' },
-  { provider: 'gemini', model: 'gemini-2.5-flash',              apiKey: GEMINI_KEY_3, label: '2.5-flash@K3' },
-  // Lite fallback (lower quality, higher RPD)
+  // High-RPD fallbacks IMMEDIATELY after primary (1500 RPD each — won't burn as fast)
   { provider: 'gemini', model: 'gemini-2.5-flash-lite',         apiKey: GEMINI_KEY_2, label: '2.5-lite@K2' },
   { provider: 'gemini', model: 'gemini-3.1-flash-lite-preview', apiKey: GEMINI_KEY_2, label: '3.1-lite@K2' },
+  // Quality alternatives (500 RPD, used when lite also burned)
+  { provider: 'gemini', model: 'gemini-3-flash-preview',        apiKey: GEMINI_KEY_2, label: '3-flash@K2' },
+  { provider: 'gemini', model: 'gemini-2.5-flash',              apiKey: GEMINI_KEY,   label: '2.5-flash@K1' },
+  { provider: 'gemini', model: 'gemini-2.5-flash',              apiKey: GEMINI_KEY_3, label: '2.5-flash@K3' },
   // Last resort: OpenRouter free
   ...(ORACLE_OPENROUTER_KEY ? [
     { provider: 'openrouter' as const, model: 'google/gemini-2.5-flash-preview:free', apiKey: ORACLE_OPENROUTER_KEY, label: 'OR-free' },
