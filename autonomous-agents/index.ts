@@ -104,11 +104,17 @@ const GEMINI_POOL_ORACLE: LLMBucket[] = [
   { provider: 'gemini', model: 'gemini-3-flash-preview',        apiKey: GEMINI_KEY_2, label: '3-flash@K2' },
   { provider: 'gemini', model: 'gemini-2.5-flash',              apiKey: GEMINI_KEY,   label: '2.5-flash@K1' },
   { provider: 'gemini', model: 'gemini-2.5-flash',              apiKey: GEMINI_KEY_3, label: '2.5-flash@K3' },
-  // Last resort: OpenRouter free
+  // Big Pickle (free OpenCode, 355B MoE) — quality fallback when Gemini burned
+  ...(OPENCODE_KEY ? [
+    { provider: 'opencode' as const, model: 'big-pickle', apiKey: OPENCODE_KEY, label: 'BigPickle' },
+  ] : []),
+  // Last resort: OpenRouter
   ...(ORACLE_OPENROUTER_KEY ? [
     { provider: 'openrouter' as const, model: 'google/gemini-2.5-flash-lite', apiKey: ORACLE_OPENROUTER_KEY, label: 'OR-free' },
   ] : []),
 ];
+
+// NOTE: OPENCODE_API key returned 401 as of 2026-03-13. Get fresh key from opencode.ai to enable BigPickle.
 
 const GEMINI_POOL_CLANK: LLMBucket[] = [
   // Primary: Clank's dedicated key, lite models

@@ -247,7 +247,7 @@ const DEPLOYER_V1_TEMPLATE_SEED = {
       body: '{ "runId": "<your run ID>", "proof": { "txHash": "<your deploy tx hash>" } }',
     },
   } as Record<string, unknown>,
-  isActive: true,
+  isActive: false, // Shelved: agents can't produce ERC-20 bytecode reliably. Revisit when ENCODE_DEPLOY helper exists.
 } as const;
 
 const ALL_TEMPLATE_SEEDS = [

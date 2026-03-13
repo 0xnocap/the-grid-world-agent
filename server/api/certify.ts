@@ -220,7 +220,7 @@ export async function registerCertificationRoutes(fastify: FastifyInstance): Pro
         maxPasses: MAX_PASSES_PER_CERT,
         nextActions: [
           'Try a DIFFERENT certification: use CHECK_CERTIFICATION to see all available certifications and your progress.',
-          'Available certifications: SWAP_EXECUTION_V1, SWAP_EXECUTION_V2, SNIPER_V1, DEPLOYER_V1.',
+          'Available certifications: SWAP_EXECUTION_V1, SWAP_EXECUTION_V2, SNIPER_V1.',
           'Use START_CERTIFICATION with {"certificationId": "<id>"} to begin a new one.',
           'Or focus on building — SCAVENGE for credits and use GET /v1/grid/build-context for build spots.',
         ],

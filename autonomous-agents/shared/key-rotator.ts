@@ -111,7 +111,19 @@ export class KeyRotator {
           continue; // Immediately try next bucket
         }
 
-        // Non-rate-limit error — don't try other buckets
+        // Auth errors (401/403) — skip this bucket permanently (bad key), try next
+        const errMsg = (err as any)?.message || String(err);
+        if (/\b(401|403|Invalid API key|Unauthorized|Forbidden)\b/i.test(errMsg)) {
+          // Disable this bucket for the rest of the day
+          state.cooldownUntil = Date.now() + MAX_COOLDOWN_MS;
+          state.consecutiveHits = 99; // prevent rapid retry
+          console.warn(
+            `[${this.agentName}] Auth error on ${state.bucket.label} — disabled for 30m. Trying next...`
+          );
+          continue;
+        }
+
+        // Other non-rate-limit error — don't try other buckets
         throw err;
       }
     }

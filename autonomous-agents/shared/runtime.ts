@@ -46,7 +46,7 @@ interface AgentConfig {
 
 interface AgentDecision {
   thought: string;
-  action: 'MOVE' | 'CHAT' | 'SEND_DM' | 'BUILD_BLUEPRINT' | 'BUILD_CONTINUE' | 'CANCEL_BUILD' | 'BUILD_PRIMITIVE' | 'BUILD_MULTI' | 'TERMINAL' | 'VOTE' | 'SUBMIT_DIRECTIVE' | 'COMPLETE_DIRECTIVE' | 'TRANSFER_CREDITS' | 'SCAVENGE' | 'START_CERTIFICATION' | 'SUBMIT_CERTIFICATION_PROOF' | 'CHECK_CERTIFICATION' | 'ENCODE_SWAP' | 'EXECUTE_SWAP' | 'EXECUTE_ONCHAIN' | 'APPROVE_TOKEN' | 'ACKNOWLEDGE_NOTIFICATION' | 'IDLE';
+  action: 'MOVE' | 'CHAT' | 'SEND_DM' | 'BUILD_BLUEPRINT' | 'BUILD_CONTINUE' | 'CANCEL_BUILD' | 'BUILD_PRIMITIVE' | 'BUILD_MULTI' | 'TERMINAL' | 'VOTE' | 'SUBMIT_DIRECTIVE' | 'COMPLETE_DIRECTIVE' | 'TRANSFER_CREDITS' | 'SCAVENGE' | 'START_CERTIFICATION' | 'SUBMIT_CERTIFICATION_PROOF' | 'CHECK_CERTIFICATION' | 'ENCODE_SWAP' | 'EXECUTE_SWAP' | 'EXECUTE_ONCHAIN' | 'APPROVE_TOKEN' | 'SWAP' | 'ACKNOWLEDGE_NOTIFICATION' | 'IDLE';
   payload?: Record<string, unknown>;
 }
 
@@ -801,7 +801,7 @@ function buildTickPrompt(
     const usdcNum = parseFloat(walletBalances.usdc);
     const wethNum = parseFloat(walletBalances.weth);
     if (usdcNum < 2 && wethNum > 0.001) {
-      sections.push(`⚠️ LOW USDC! You have ${walletBalances.weth} WETH. Swap some WETH back to USDC before attempting certification. Use ENCODE_SWAP with tokenIn=WETH(0x4200000000000000000000000000000000000006), tokenOut=USDC(0x036CbD53842c5426634e7929541eC2318f3dCF7e).`);
+      sections.push(`⚠️ LOW USDC! You have ${walletBalances.weth} WETH. Use SWAP { "from": "WETH", "to": "USDC", "amount": "0.001" } to convert WETH back to USDC. Adjust amount based on what you need.`);
     } else if (usdcNum < 2) {
       sections.push(`⚠️ LOW USDC and no WETH to swap back. Cannot pay certification fees.`);
     }
@@ -1227,6 +1227,61 @@ async function executeAction(
         const approveHash = await chain.approveToken(token, spender, amount);
         console.log(`[${name}] Approval confirmed: ${approveHash}`);
         (decision as any)._txHash = approveHash;
+        break;
+      }
+
+      case 'SWAP': {
+        // One-action swap: encode calldata → approve token → execute tx
+        // Payload: { from: "USDC"|"WETH", to: "USDC"|"WETH", amount: "0.5" }
+        if (!chain) { (decision as any)._swapResult = 'No chain client available'; break; }
+
+        const USDC_ADDR = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+        const WETH_ADDR = '0x4200000000000000000000000000000000000006';
+        const ROUTER_ADDR = '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4';
+
+        const fromToken = String(p.from || '').toUpperCase();
+        const toToken = String(p.to || '').toUpperCase();
+        const amount = String(p.amount || '');
+
+        if (!amount || !fromToken || !toToken || fromToken === toToken) {
+          (decision as any)._swapResult = 'SWAP requires { from: "USDC"|"WETH", to: "USDC"|"WETH", amount: "0.5" }';
+          break;
+        }
+
+        const tokenInAddr = fromToken === 'USDC' ? USDC_ADDR : WETH_ADDR;
+        const tokenOutAddr = toToken === 'USDC' ? USDC_ADDR : WETH_ADDR;
+
+        try {
+          // Step 1: Encode swap with 1% slippage (safe default)
+          console.log(`[${name}] SWAP: ${amount} ${fromToken} → ${toToken}`);
+          const encResult = await api.encodeSwapCalldata({
+            tokenIn: tokenInAddr,
+            tokenOut: tokenOutAddr,
+            amountIn: amount,
+            amountOutMinimum: '1', // server will quote and we'll use option E (1% slippage)
+          });
+
+          const calldata = encResult.calldata;
+          if (!calldata || calldata.length < 10) {
+            (decision as any)._swapResult = `SWAP encode failed: no calldata returned`;
+            break;
+          }
+
+          // Step 2: Approve token for router (max allowance)
+          console.log(`[${name}] SWAP: Approving ${fromToken} for router...`);
+          const approveAmount = BigInt('115792089237316195423570985008687907853269984665640564039457584007913129639935'); // max uint256
+          await chain.approveToken(tokenInAddr, ROUTER_ADDR, approveAmount);
+
+          // Step 3: Execute swap
+          console.log(`[${name}] SWAP: Executing swap tx...`);
+          const txHash = await chain.sendTransaction(encResult.router, calldata, 0n);
+          console.log(`[${name}] SWAP complete: ${txHash}`);
+          (decision as any)._swapResult = `SWAP SUCCESS: ${amount} ${fromToken} → ${toToken} | tx: ${txHash}`;
+          (decision as any)._txHash = txHash;
+        } catch (err: any) {
+          console.error(`[${name}] SWAP failed: ${err.message}`);
+          (decision as any)._swapResult = `SWAP FAILED: ${err.message}`;
+        }
         break;
       }
 

@@ -674,6 +674,8 @@ export class GridAPIClient {
     recipient?: string;
     amountIn?: string;
     amountOutMinimum?: string;
+    tokenIn?: string;
+    tokenOut?: string;
   }): Promise<{ router: string; calldata: string; rawSwapCalldata: string; params: Record<string, string>; usage: Record<string, string> }> {
     return this.request('POST', '/v1/certify/encode-swap', params || {});
   }
