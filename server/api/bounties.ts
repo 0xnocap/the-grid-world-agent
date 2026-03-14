@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate } from '../auth.js';
 import * as db from '../db.js';
 import { getWorldManager } from '../world.js';
-import { publishWorkOrderFeedbackOnChain } from '../chain.js';
+import { publishWorkOrderFeedbackOnChain, transferUsdc } from '../chain.js';
 import { checkRateLimit } from '../throttle.js';
 import {
   BUILD_CREDIT_CONFIG,
@@ -122,11 +122,92 @@ async function verifySoloBuild(
 }
 
 // ===========================================
+// Coordinated Build Auto-Verification
+// ===========================================
+
+async function verifyCoordinatedBuild(
+  bounty: db.BountyRow
+): Promise<{ passed: boolean; details: Record<string, unknown> }> {
+  const req = bounty.requirements as unknown as SoloBuildRequirements;
+  const claims = await db.getBountyClaims(bounty.id);
+
+  if (!claims.length) return { passed: false, details: { error: 'No claims found' } };
+
+  // Verify all claims have been submitted
+  const allSubmitted = claims.every(c => c.status === 'submitted');
+  if (!allSubmitted) {
+    return { passed: false, details: { error: 'Not all claimants have submitted yet' } };
+  }
+
+  // Aggregate builds from ALL claimants, filtering to zone
+  type BuildRow = {
+    x: number; z: number; category?: string; blueprint_name?: string;
+    created_at: string | number; id: string; blueprint_instance_id?: string;
+  };
+  const allInZone: BuildRow[] = [];
+  const perAgentTimingResults: Record<string, { total: number; afterClaim: number }> = {};
+
+  for (const claim of claims) {
+    const agentBuilds = await db.getAgentBuilds(claim.agent_id) as BuildRow[];
+
+    const inZone = agentBuilds.filter(b =>
+      Math.hypot((b.x ?? 0) - req.zone.centerX, (b.z ?? 0) - req.zone.centerZ) <= req.zone.radius
+    );
+    allInZone.push(...inZone);
+
+    // Per-agent timing: each agent's builds must be after THEIR claim time
+    const afterClaim = inZone.filter(b => {
+      const createdAt = typeof b.created_at === 'number' ? b.created_at : new Date(b.created_at).getTime();
+      return createdAt >= claim.claimed_at;
+    });
+    perAgentTimingResults[claim.agent_id] = { total: inZone.length, afterClaim: afterClaim.length };
+  }
+
+  // Count unique structures across all agents
+  const structureIds = new Set(allInZone.map(b => b.blueprint_instance_id || b.id));
+  const structureCount = structureIds.size;
+  const structurePass = structureCount >= req.minStructures;
+
+  // Check required categories across all agents
+  const categories = new Set(allInZone.map(b => b.category).filter(Boolean));
+  const categoryPass = !req.requiredCategories?.length ||
+    req.requiredCategories.every(c => categories.has(c));
+
+  // Check required blueprints across all agents
+  const blueprintNames = new Set(allInZone.map(b => b.blueprint_name).filter(Boolean));
+  const blueprintPass = !req.requiredBlueprints?.length ||
+    req.requiredBlueprints.every(bp => blueprintNames.has(bp));
+
+  // Check total primitives across all agents
+  const totalPrimitives = allInZone.length;
+  const primitivePass = totalPrimitives >= (req.minTotalPrimitives || 0);
+
+  // Timing pass: total builds after each agent's own claim time must meet threshold
+  const totalAfterClaim = Object.values(perAgentTimingResults).reduce((sum, r) => sum + r.afterClaim, 0);
+  const timingPass = totalAfterClaim >= (req.minTotalPrimitives || req.minStructures);
+
+  const passed = structurePass && categoryPass && blueprintPass && primitivePass && timingPass;
+
+  return {
+    passed,
+    details: {
+      claimants: claims.map(c => c.agent_id),
+      structureCount, structurePass,
+      categoriesFound: Array.from(categories), categoryPass,
+      blueprintsFound: Array.from(blueprintNames), blueprintPass,
+      totalPrimitives, primitivePass,
+      totalBuildsAfterClaim: totalAfterClaim, perAgentTimingResults, timingPass,
+    },
+  };
+}
+
+// ===========================================
 // Reward Distribution
 // ===========================================
 
 interface BountyRewards {
   credits?: number;
+  usdc?: number;
   materials?: Record<string, number>;
   blueprintIds?: string[];
   reputation?: number;
@@ -138,6 +219,21 @@ async function awardBountyRewards(bounty: db.BountyRow, agentId: string): Promis
   // Credits
   if (rewards.credits) {
     await db.addCreditsWithCap(agentId, rewards.credits, BUILD_CREDIT_CONFIG.CREDIT_CAP);
+  }
+
+  // USDC (onchain transfer to agent's owner wallet)
+  if (rewards.usdc && rewards.usdc > 0) {
+    const agent = await db.getAgent(agentId);
+    if (agent?.ownerId) {
+      const txHash = await transferUsdc(agent.ownerId, rewards.usdc);
+      if (txHash) {
+        console.log(`[Bounties] USDC reward: ${rewards.usdc} USDC → ${agent.ownerId} for agent ${agentId} (tx: ${txHash})`);
+      } else {
+        console.error(`[Bounties] USDC reward failed for agent ${agentId} (${rewards.usdc} USDC → ${agent.ownerId})`);
+      }
+    } else {
+      console.error(`[Bounties] Cannot send USDC reward: agent ${agentId} has no ownerId`);
+    }
   }
 
   // Materials
@@ -317,7 +413,61 @@ export async function registerBountyRoutes(fastify: FastifyInstance): Promise<vo
       }
     }
 
-    // Coordinated/creative: mark for review
+    // Coordinated build: auto-verify once all claimants have submitted
+    if (bounty.type === 'coordinated_build') {
+      const allClaims = await db.getBountyClaims(id);
+      const allSubmitted = allClaims.every(c => c.status === 'submitted');
+
+      if (!allSubmitted) {
+        const submitted = allClaims.filter(c => c.status === 'submitted').length;
+        const world = getWorldManager();
+        world.broadcastEvent({
+          id: 0, agentId: auth.agentId, agentName: auth.agentId,
+          source: 'system', kind: 'terminal',
+          body: `Bounty submission received: "${bounty.title}" — waiting for other agents (${submitted}/${allClaims.length})`,
+          metadata: { bountyId: id }, createdAt: Date.now(),
+        });
+        return { status: 'waiting', message: `Submission recorded. Waiting for other agents (${submitted}/${allClaims.length} submitted).` };
+      }
+
+      // All claimants submitted — run coordinated verification
+      const verification = await verifyCoordinatedBuild(bounty);
+      const world = getWorldManager();
+
+      if (verification.passed) {
+        // Award rewards to ALL claimants
+        for (const c of allClaims) {
+          await db.verifyBountyClaim(id, c.agent_id, true);
+          await awardBountyRewards(bounty, c.agent_id);
+        }
+        await db.updateBountyStatus(id, 'completed');
+
+        world.broadcastEvent({
+          id: 0, agentId: 'system', agentName: 'OpGrid',
+          source: 'system', kind: 'terminal',
+          body: `Coordinated bounty completed: "${bounty.title}" by agents ${allClaims.map(c => c.agent_id).join(', ')}!`,
+          metadata: { bountyId: id }, createdAt: Date.now(),
+        });
+
+        return { status: 'verified', verification: verification.details };
+      } else {
+        // Reject all claims
+        for (const c of allClaims) {
+          await db.verifyBountyClaim(id, c.agent_id, false);
+        }
+
+        world.broadcastEvent({
+          id: 0, agentId: 'system', agentName: 'OpGrid',
+          source: 'system', kind: 'terminal',
+          body: `Coordinated bounty rejected: "${bounty.title}" — verification failed`,
+          metadata: { bountyId: id }, createdAt: Date.now(),
+        });
+
+        return { status: 'rejected', verification: verification.details };
+      }
+    }
+
+    // Creative/other: mark for review
     await db.updateBountyStatus(id, 'review');
     const world = getWorldManager();
     world.broadcastEvent({

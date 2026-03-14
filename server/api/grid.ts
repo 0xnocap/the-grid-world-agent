@@ -28,6 +28,7 @@ import type { BlueprintBuildPlan } from '../types.js';
 import { EXEMPT_SHAPES, validateBuildPosition } from '../build-validation.js';
 import { getSkillsForClass, getSkillById } from '../data/skills.js';
 import { submitDirectiveOnChain, syncGuildOnChain } from '../chain.js';
+import { agentHasGrantedTool } from './bounties.js';
 
 // --- Spatial Computation Helpers ---
 
@@ -1612,42 +1613,54 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       footMaxZ = Math.max(footMaxZ, prim.position.z + hz);
     }
 
-    // Check footprint against existing primitives (in-memory cache)
-    const existingPrims = world.getWorldPrimitives();
-    for (const ep of existingPrims) {
-      if (EXEMPT_SHAPES.has(ep.shape)) continue;
-      const ehx = ep.scale.x / 2;
-      const ehz = ep.scale.z / 2;
-      const epMinX = ep.position.x - ehx;
-      const epMaxX = ep.position.x + ehx;
-      const epMinZ = ep.position.z - ehz;
-      const epMaxZ = ep.position.z + ehz;
+    // Connector bypass: agents with an active CONNECTOR_BYPASS bounty grant can
+    // place connector/road blueprints through existing geometry and reservations.
+    const isConnectorBlueprint = bpTags.includes('connector') || bpTags.includes('road');
+    const hasConnectorBypass = isConnectorBlueprint && agentHasGrantedTool(agentId, 'CONNECTOR_BYPASS');
+    if (hasConnectorBypass) {
+      console.log(`[Grid] Connector bypass: ${agentId} placing ${body.name}`);
+    }
 
-      // AABB overlap test in XZ
-      if (footMinX < epMaxX && footMaxX > epMinX && footMinZ < epMaxZ && footMaxZ > epMinZ) {
-        return reply.code(409).send({
-          error: `Blueprint footprint overlaps existing geometry near (${ep.position.x.toFixed(1)}, ${ep.position.z.toFixed(1)}). Try a different anchor further away.`,
-          nextActions: [
-            'Use GET /v1/grid/build-context to find pre-validated safe build spots with guaranteed clearance.',
-            `Pick an anchor at least 6 units away from (${ep.position.x.toFixed(1)}, ${ep.position.z.toFixed(1)}).`,
-            'Try rotating the blueprint (rotY parameter) to fit in available space.',
-          ],
-        });
+    // Check footprint against existing primitives (in-memory cache)
+    if (!hasConnectorBypass) {
+      const existingPrims = world.getWorldPrimitives();
+      for (const ep of existingPrims) {
+        if (EXEMPT_SHAPES.has(ep.shape)) continue;
+        const ehx = ep.scale.x / 2;
+        const ehz = ep.scale.z / 2;
+        const epMinX = ep.position.x - ehx;
+        const epMaxX = ep.position.x + ehx;
+        const epMinZ = ep.position.z - ehz;
+        const epMaxZ = ep.position.z + ehz;
+
+        // AABB overlap test in XZ
+        if (footMinX < epMaxX && footMaxX > epMinX && footMinZ < epMaxZ && footMaxZ > epMinZ) {
+          return reply.code(409).send({
+            error: `Blueprint footprint overlaps existing geometry near (${ep.position.x.toFixed(1)}, ${ep.position.z.toFixed(1)}). Try a different anchor further away.`,
+            nextActions: [
+              'Use GET /v1/grid/build-context to find pre-validated safe build spots with guaranteed clearance.',
+              `Pick an anchor at least 6 units away from (${ep.position.x.toFixed(1)}, ${ep.position.z.toFixed(1)}).`,
+              'Try rotating the blueprint (rotY parameter) to fit in available space.',
+            ],
+          });
+        }
       }
     }
 
     // Check footprint against active blueprint reservations from other agents
-    for (const [reservedAgent, res] of world.getBlueprintReservations()) {
-      if (reservedAgent === agentId) continue;
-      if (footMinX < res.maxX && footMaxX > res.minX && footMinZ < res.maxZ && footMaxZ > res.minZ) {
-        return reply.code(409).send({
-          error: `Blueprint footprint overlaps another agent's active build. Try a different anchor.`,
-          nextActions: [
-            'Use GET /v1/grid/build-context to find pre-validated safe build spots.',
-            'WAIT for the other agent to finish building, then retry.',
-            'Try a different location further from the active build zone.',
-          ],
-        });
+    if (!hasConnectorBypass) {
+      for (const [reservedAgent, res] of world.getBlueprintReservations()) {
+        if (reservedAgent === agentId) continue;
+        if (footMinX < res.maxX && footMaxX > res.minX && footMinZ < res.maxZ && footMaxZ > res.minZ) {
+          return reply.code(409).send({
+            error: `Blueprint footprint overlaps another agent's active build. Try a different anchor.`,
+            nextActions: [
+              'Use GET /v1/grid/build-context to find pre-validated safe build spots.',
+              'WAIT for the other agent to finish building, then retry.',
+              'Try a different location further from the active build zone.',
+            ],
+          });
+        }
       }
     }
 

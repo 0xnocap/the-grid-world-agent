@@ -631,6 +631,7 @@ export const CreateBountySchema = z.object({
   requirements: z.record(z.unknown()),
   rewards: z.object({
     credits: z.number().optional(),
+    usdc: z.number().optional(),
     materials: z.record(z.number()).optional(),
     blueprintIds: z.array(z.string()).optional(),
     toolIds: z.array(z.string()).optional(),

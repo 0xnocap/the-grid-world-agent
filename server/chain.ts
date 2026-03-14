@@ -634,3 +634,45 @@ export async function readSnipeResult(runId: string): Promise<{
     snipedBlock: Number(snipedBlock),
   };
 }
+
+// ===========================================
+// USDC Transfer (Bounty Rewards)
+// ===========================================
+
+const USDC_ADDRESS = process.env.USDC_TOKEN || '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+const ERC20_TRANSFER_ABI = ['function transfer(address to, uint256 amount) returns (bool)'];
+
+/**
+ * Transfer USDC from the relayer wallet to a recipient address.
+ * Used for bounty reward payouts.
+ * @param recipientAddress - Wallet address to send USDC to
+ * @param amountUsdc - Amount in human-readable USDC (e.g. 20 = 20 USDC)
+ * @returns Transaction hash or null if transfer failed
+ */
+export async function transferUsdc(
+  recipientAddress: string,
+  amountUsdc: number
+): Promise<string | null> {
+  if (!relayer) {
+    console.error('[Chain] Cannot transfer USDC: no relayer wallet configured');
+    return null;
+  }
+  if (!ethers.isAddress(recipientAddress)) {
+    console.error(`[Chain] Invalid recipient address: ${recipientAddress}`);
+    return null;
+  }
+
+  const amountAtomic = BigInt(Math.round(amountUsdc * 1_000_000)); // USDC has 6 decimals
+  const usdc = new ethers.Contract(USDC_ADDRESS, ERC20_TRANSFER_ABI, relayer);
+
+  try {
+    const tx = await usdc.transfer(recipientAddress, amountAtomic);
+    console.log(`[Chain] USDC transfer: ${amountUsdc} USDC → ${recipientAddress} (tx: ${tx.hash})`);
+    await tx.wait();
+    console.log(`[Chain] USDC transfer confirmed: ${tx.hash}`);
+    return tx.hash;
+  } catch (error) {
+    console.error(`[Chain] USDC transfer failed:`, error);
+    return null;
+  }
+}
