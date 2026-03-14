@@ -163,9 +163,9 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
         `}
         onTouchMove={(e) => e.stopPropagation()}
       >
-        <div className="flex flex-col h-full px-5 py-8 gap-8 overflow-y-auto overscroll-contain [&>*]:shrink-0">
+        <div className="flex flex-col h-full px-5 py-8 gap-8 overflow-hidden">
           {/* Header with accent line */}
-          <div className="space-y-3">
+          <div className="space-y-3 shrink-0">
             <div className="flex items-center gap-3">
               <div className="w-1 h-4 bg-violet-500 rounded-full shadow-lg shadow-violet-500/50" />
               <h1 className={`text-xs font-black uppercase tracking-[0.4em] ${textPrimary}`}>OpGrid</h1>
@@ -179,7 +179,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
           </div>
 
           {/* Live Agents Section */}
-          <section className="space-y-4">
+          <section className="space-y-4 shrink-0">
             <div className={`flex items-center justify-between text-[10px] uppercase tracking-widest ${sidebarHeader}`}>
               <span className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
@@ -188,7 +188,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
               <span className="font-mono text-violet-500 tabular-nums">{worldState.agents.length}</span>
             </div>
             <div
-              className="space-y-1 max-h-[30vh] overflow-y-auto pr-1 scrollbar-thin"
+              className="space-y-1 max-h-[140px] overflow-y-auto pr-1 scrollbar-thin"
               style={{ scrollbarWidth: 'thin', scrollbarColor: isDarkMode ? '#334155 transparent' : '#cbd5e1 transparent' }}
             >
               {worldState.agents.map(agent => (
@@ -215,10 +215,12 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
           </section>
 
           {/* Certification Leaderboard */}
-          <CertificationPanel isDarkMode={isDarkMode} />
+          <div className="shrink-0">
+            <CertificationPanel isDarkMode={isDarkMode} />
+          </div>
 
-          {/* Terminal Section - Agent Chat Messages */}
-          <section className="flex flex-col space-y-2 min-h-[250px]">
+          {/* Terminal Section - Agent Chat Messages — fills remaining space */}
+          <section className="flex flex-col space-y-2 min-h-0 flex-1">
             <div className={`text-[10px] uppercase tracking-widest flex items-center gap-2 ${sidebarHeader}`}>
               <Terminal size={12} className="text-emerald-500" />
               <span>Terminal</span>
@@ -227,7 +229,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
             </div>
             <div
               ref={terminalScrollRef}
-              className="flex-1 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5 pr-1 scrollbar-thin select-text overscroll-contain touch-pan-y"
+              className="flex-1 min-h-0 overflow-y-auto font-mono text-[10px] leading-relaxed space-y-1.5 pr-1 scrollbar-thin select-text overscroll-contain touch-pan-y"
               style={{ scrollbarWidth: 'thin', scrollbarColor: isDarkMode ? '#334155 transparent' : '#cbd5e1 transparent' }}
             >
               {loadingOlderMessages && (
@@ -268,7 +270,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
           </section>
 
           {/* Footer Status */}
-          <div className={`pt-4 border-t ${isDarkMode ? 'border-white/5' : 'border-violet-200/30'} space-y-3`}>
+          <div className={`pt-4 border-t shrink-0 ${isDarkMode ? 'border-white/5' : 'border-violet-200/30'} space-y-3`}>
             <div className="flex justify-between items-center text-[9px] font-mono uppercase tracking-wider">
               <span className={textMuted}>Status</span>
               <span className="text-emerald-500 font-bold flex items-center gap-1.5">
