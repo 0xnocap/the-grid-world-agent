@@ -50,7 +50,7 @@ function LeaderboardRow({
 
   return (
     <div
-      className={`grid grid-cols-[22px_1fr_44px_42px_40px] gap-1.5 px-3 ${compact ? 'py-1.5' : 'py-2'} text-[11px] transition-colors ${rowHover}`}
+      className={`grid grid-cols-[22px_1fr_44px_42px_40px] gap-1.5 px-3 ${compact ? 'py-1' : 'py-1.5'} text-[11px] transition-colors ${rowHover}`}
       title={`${entry.passRate.toFixed(1)}% pass rate · avg ${entry.avgScore ?? 0}/100 · ${entry.certsAttempted ?? 1} cert${(entry.certsAttempted ?? 1) > 1 ? 's' : ''}`}
     >
       <span className="font-mono text-[12px] leading-tight">
@@ -199,7 +199,7 @@ const CertificationPanel: React.FC<CertificationPanelProps> = ({ isDarkMode }) =
 
   return (
     <>
-      <section className="space-y-3">
+      <section className="space-y-2">
         <div className={`flex items-center justify-between text-[10px] uppercase tracking-widest ${textMuted}`}>
           <span>Certification</span>
           {hasMore ? (

@@ -163,9 +163,9 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
         `}
         onTouchMove={(e) => e.stopPropagation()}
       >
-        <div className="flex flex-col h-full px-5 py-8 gap-8 overflow-hidden">
-          {/* Header with accent line */}
-          <div className="space-y-3 shrink-0">
+        <div className="flex flex-col h-full px-5 py-4 gap-3 overflow-hidden">
+          {/* Header — compact */}
+          <div className="space-y-1 shrink-0">
             <div className="flex items-center gap-3">
               <div className="w-1 h-4 bg-violet-500 rounded-full shadow-lg shadow-violet-500/50" />
               <h1 className={`text-xs font-black uppercase tracking-[0.4em] ${textPrimary}`}>OpGrid</h1>
@@ -178,9 +178,9 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
             </div>
           </div>
 
-          {/* Live Agents Section */}
-          <section className="space-y-4 shrink-0">
-            <div className={`flex items-center justify-between text-[10px] uppercase tracking-widest ${sidebarHeader}`}>
+          {/* Live Agents — compact inline row */}
+          <section className="shrink-0">
+            <div className={`flex items-center justify-between text-[10px] uppercase tracking-widest mb-1.5 ${sidebarHeader}`}>
               <span className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
                 Live Agents
@@ -188,39 +188,39 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
               <span className="font-mono text-violet-500 tabular-nums">{worldState.agents.length}</span>
             </div>
             <div
-              className="space-y-1 max-h-[140px] overflow-y-auto pr-1 scrollbar-thin"
+              className="flex flex-wrap gap-1.5 max-h-[72px] overflow-y-auto pr-1 scrollbar-thin"
               style={{ scrollbarWidth: 'thin', scrollbarColor: isDarkMode ? '#334155 transparent' : '#cbd5e1 transparent' }}
             >
               {worldState.agents.map(agent => (
                 <div
                   key={agent.id}
                   onClick={() => onAgentClick(agent.id)}
-                  className={`flex items-center gap-3 py-2 px-3 rounded-lg group transition-all cursor-pointer
-                    ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-black/5'}
+                  className={`flex items-center gap-1.5 py-1 px-2 rounded-md group transition-all cursor-pointer text-[10px]
+                    ${isDarkMode ? 'hover:bg-white/5 bg-white/[0.03]' : 'hover:bg-black/5 bg-black/[0.03]'}
                     ${followAgentId === agent.id ? 'bg-violet-500/10 ring-1 ring-violet-500/30' : ''}`}
                 >
                   <div
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0 ring-1 ring-white/20 shadow-sm"
-                    style={{ backgroundColor: agent.color, boxShadow: `0 0 8px ${agent.color}40` }}
+                    className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: agent.color, boxShadow: `0 0 6px ${agent.color}40` }}
                   />
-                  <span className={`text-[11px] font-semibold flex-1 truncate ${textPrimary}`}>
+                  <span className={`font-semibold truncate ${textPrimary}`}>
                     {agent.name}
                   </span>
                   {followAgentId === agent.id && (
-                    <Focus size={10} className="text-violet-500" />
+                    <Focus size={8} className="text-violet-500" />
                   )}
                 </div>
               ))}
             </div>
           </section>
 
-          {/* Certification Leaderboard */}
+          {/* Certification Leaderboard — compact */}
           <div className="shrink-0">
             <CertificationPanel isDarkMode={isDarkMode} />
           </div>
 
-          {/* Terminal Section - Agent Chat Messages — fills remaining space */}
-          <section className="flex flex-col space-y-2 min-h-0 flex-1">
+          {/* Terminal — dominant section, fills all remaining space */}
+          <section className="flex flex-col space-y-1.5 min-h-0 flex-1">
             <div className={`text-[10px] uppercase tracking-widest flex items-center gap-2 ${sidebarHeader}`}>
               <Terminal size={12} className="text-emerald-500" />
               <span>Terminal</span>
@@ -270,7 +270,7 @@ const SpectatorHUD: React.FC<SpectatorHUDProps> = ({
           </section>
 
           {/* Footer Status */}
-          <div className={`pt-4 border-t shrink-0 ${isDarkMode ? 'border-white/5' : 'border-violet-200/30'} space-y-3`}>
+          <div className={`pt-3 border-t shrink-0 ${isDarkMode ? 'border-white/5' : 'border-violet-200/30'} space-y-2`}>
             <div className="flex justify-between items-center text-[9px] font-mono uppercase tracking-wider">
               <span className={textMuted}>Status</span>
               <span className="text-emerald-500 font-bold flex items-center gap-1.5">
