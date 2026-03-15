@@ -24,7 +24,8 @@ import {
   MATERIAL_CONFIG,
   MATERIAL_TYPES
 } from '../types.js';
-import type { BlueprintBuildPlan } from '../types.js';
+import type { BlueprintBuildPlan, WorldNode, DeclaredNodeTier } from '../types.js';
+import { NODE_GAP_MIN, computeNodeTier } from '../types.js';
 import { EXEMPT_SHAPES, validateBuildPosition } from '../build-validation.js';
 import { getSkillsForClass, getSkillById } from '../data/skills.js';
 import { submitDirectiveOnChain, syncGuildOnChain } from '../chain.js';
@@ -721,6 +722,262 @@ function buildSettlementNodes(
   return nodes;
 }
 
+// --- Declared Nodes: persistent DB-backed nodes ---
+
+interface DeclaredNodeWithStats extends WorldNode {
+  structureCount: number;
+  primitiveCount: number;
+  footprintArea: number;
+  dominantCategory: NodeCategory;
+  missingCategories: Exclude<NodeCategory, 'mixed'>[];
+  builders: string[];
+  connections: SettlementNodeSummary['connections'];
+}
+
+/** One-time migration: seed world_nodes from legacy BFS clusters. */
+async function seedDeclaredNodesFromLegacy(
+  structures: StructureSummary[],
+  connectorPrimitives: PrimitiveLike[]
+): Promise<void> {
+  const existingCount = await db.getWorldNodeCount();
+  if (existingCount > 0) return; // already seeded
+
+  const legacyNodes = buildSettlementNodes(structures, connectorPrimitives);
+  if (legacyNodes.length === 0) return;
+
+  console.log(`[Nodes] Seeding ${legacyNodes.length} declared nodes from legacy BFS clusters...`);
+  for (const ln of legacyNodes) {
+    try {
+      await db.createWorldNode({
+        id: ln.id,
+        name: ln.name,
+        centerX: Math.round(ln.center.x * 10) / 10,
+        centerZ: Math.round(ln.center.z * 10) / 10,
+        radius: Math.max(30, Math.round(ln.radius)),
+        founderAgentId: ln.builders[0] || 'system',
+        tier: ln.tier as DeclaredNodeTier,
+      });
+    } catch (err) {
+      console.warn(`[Nodes] Failed to seed node ${ln.id}:`, err);
+    }
+  }
+  console.log(`[Nodes] Seeded ${legacyNodes.length} declared nodes.`);
+}
+
+/** Get declared nodes from DB, enriched with live stats from primitives. */
+async function getDeclaredNodesWithStats(
+  structures: StructureSummary[],
+  connectorPrimitives: PrimitiveLike[]
+): Promise<DeclaredNodeWithStats[]> {
+  const dbNodes = await db.getAllWorldNodes();
+  if (dbNodes.length === 0) return [];
+
+  const nodes: DeclaredNodeWithStats[] = dbNodes.map(n => ({
+    ...n,
+    structureCount: 0,
+    primitiveCount: 0,
+    footprintArea: 0,
+    dominantCategory: 'mixed' as NodeCategory,
+    missingCategories: [...NODE_CATEGORY_BASE] as Exclude<NodeCategory, 'mixed'>[],
+    builders: [],
+    connections: [],
+  }));
+
+  // Assign structures to their nearest declared node (must be within radius + tolerance)
+  const ASSIGN_TOLERANCE = 20; // structures up to 20u outside radius still count
+  for (const s of structures) {
+    let bestNode: DeclaredNodeWithStats | null = null;
+    let bestDist = Infinity;
+    for (const n of nodes) {
+      const d = pointDistanceXZ(s.center, { x: n.centerX, z: n.centerZ });
+      if (d < bestDist && d <= n.radius + ASSIGN_TOLERANCE) {
+        bestDist = d;
+        bestNode = n;
+      }
+    }
+    if (bestNode) {
+      bestNode.structureCount++;
+      bestNode.primitiveCount += s.primitiveCount;
+      bestNode.footprintArea += s.footprintArea;
+      for (const b of s.builders) {
+        if (!bestNode.builders.includes(b)) bestNode.builders.push(b);
+      }
+    }
+  }
+
+  // Compute categories + tier for each node
+  for (const n of nodes) {
+    const nodeStructures = structures.filter(s => {
+      const d = pointDistanceXZ(s.center, { x: n.centerX, z: n.centerZ });
+      return d <= n.radius + ASSIGN_TOLERANCE;
+    });
+
+    const categoryCounts = new Map<NodeCategory, number>();
+    for (const s of nodeStructures) {
+      categoryCounts.set(s.category, (categoryCounts.get(s.category) || 0) + s.primitiveCount);
+    }
+    n.dominantCategory = dominantCategory(categoryCounts);
+    n.missingCategories = NODE_CATEGORY_BASE.filter(cat => !categoryCounts.has(cat)) as Exclude<NodeCategory, 'mixed'>[];
+
+    // Auto-update tier from structure count
+    const computedTier = computeNodeTier(n.structureCount);
+    if (computedTier !== n.tier) {
+      n.tier = computedTier;
+      db.updateWorldNode(n.id, { tier: computedTier }).catch(() => {});
+    }
+  }
+
+  // Compute connections between declared nodes
+  const MAX_CONNECTION_DISTANCE = 700;
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const dist = pointDistanceXZ(
+        { x: nodes[i].centerX, z: nodes[i].centerZ },
+        { x: nodes[j].centerX, z: nodes[j].centerZ }
+      );
+      if (dist > MAX_CONNECTION_DISTANCE) continue;
+
+      const hasConnector = hasConnectorBetweenNodes(
+        { center: { x: nodes[i].centerX, z: nodes[i].centerZ } },
+        { center: { x: nodes[j].centerX, z: nodes[j].centerZ } },
+        connectorPrimitives
+      );
+      const edgeGap = dist - (nodes[i].radius + nodes[j].radius);
+      if (!hasConnector && edgeGap > 120) continue;
+
+      const roundedDist = Math.round(dist);
+      const bearingIJ = compassBearing(nodes[i].centerX, nodes[i].centerZ, nodes[j].centerX, nodes[j].centerZ);
+      const bearingDegIJ = compassBearingDeg(nodes[i].centerX, nodes[i].centerZ, nodes[j].centerX, nodes[j].centerZ);
+      const bearingJI = compassBearing(nodes[j].centerX, nodes[j].centerZ, nodes[i].centerX, nodes[i].centerZ);
+      const bearingDegJI = compassBearingDeg(nodes[j].centerX, nodes[j].centerZ, nodes[i].centerX, nodes[i].centerZ);
+
+      const dirX = dist > 0 ? (nodes[j].centerX - nodes[i].centerX) / dist : 0;
+      const dirZ = dist > 0 ? (nodes[j].centerZ - nodes[i].centerZ) / dist : 0;
+      const gateAX = Math.round(nodes[i].centerX + dirX * nodes[i].radius);
+      const gateAZ = Math.round(nodes[i].centerZ + dirZ * nodes[i].radius);
+      const gateBX = Math.round(nodes[j].centerX - dirX * nodes[j].radius);
+      const gateBZ = Math.round(nodes[j].centerZ - dirZ * nodes[j].radius);
+
+      nodes[i].connections.push({
+        targetId: nodes[j].id, targetName: nodes[j].name, distance: roundedDist,
+        hasConnector, bearing: bearingIJ, bearingDeg: bearingDegIJ,
+        gateX: gateAX, gateZ: gateAZ, targetGateX: gateBX, targetGateZ: gateBZ,
+      });
+      nodes[j].connections.push({
+        targetId: nodes[i].id, targetName: nodes[i].name, distance: roundedDist,
+        hasConnector, bearing: bearingJI, bearingDeg: bearingDegJI,
+        gateX: gateBX, gateZ: gateBZ, targetGateX: gateAX, targetGateZ: gateAZ,
+      });
+    }
+  }
+
+  for (const node of nodes) {
+    node.connections.sort((a, b) => a.distance - b.distance);
+    if (node.connections.length > 5) node.connections = node.connections.slice(0, 5);
+  }
+
+  return nodes;
+}
+
+/** Find nearest declared node to a point. Returns null + distance if none exist. */
+function findNearestDeclaredNode(
+  x: number, z: number, nodes: DeclaredNodeWithStats[]
+): { node: DeclaredNodeWithStats | null; distToCenter: number; distToEdge: number } {
+  let best: DeclaredNodeWithStats | null = null;
+  let bestDist = Infinity;
+  for (const n of nodes) {
+    const d = Math.hypot(n.centerX - x, n.centerZ - z);
+    if (d < bestDist) { bestDist = d; best = n; }
+  }
+  return {
+    node: best,
+    distToCenter: bestDist,
+    distToEdge: best ? Math.max(0, bestDist - best.radius) : Infinity,
+  };
+}
+
+/** Auto-create a declared node when an agent builds far enough from existing nodes. */
+async function autoFoundNode(
+  anchorX: number, anchorZ: number, founderAgentId: string,
+  existingNodes: DeclaredNodeWithStats[]
+): Promise<WorldNode> {
+  // Generate direction-based name
+  const worldCenterX = existingNodes.length > 0
+    ? existingNodes.reduce((s, n) => s + n.centerX, 0) / existingNodes.length : 0;
+  const worldCenterZ = existingNodes.length > 0
+    ? existingNodes.reduce((s, n) => s + n.centerZ, 0) / existingNodes.length : 0;
+  const dir = directionForPoint(anchorX, anchorZ, worldCenterX, worldCenterZ);
+  const dirLabel = DIRECTION_LABELS[dir] || 'Central';
+
+  // Count existing nodes with same direction to add suffix
+  const sameDir = existingNodes.filter(n => {
+    const nd = directionForPoint(n.centerX, n.centerZ, worldCenterX, worldCenterZ);
+    return nd === dir;
+  }).length;
+  const suffix = sameDir > 0 ? ` ${sameDir + 1}` : '';
+  const name = `settlement-node ${dirLabel}${suffix}`;
+
+  const id = `node_${Math.round(anchorX)}_${Math.round(anchorZ)}_${Date.now()}`;
+  const node = await db.createWorldNode({
+    id,
+    name,
+    centerX: Math.round(anchorX * 10) / 10,
+    centerZ: Math.round(anchorZ * 10) / 10,
+    radius: 30,
+    founderAgentId,
+    tier: 'settlement-node',
+  });
+  console.log(`[Nodes] Agent ${founderAgentId} founded "${name}" at (${Math.round(anchorX)}, ${Math.round(anchorZ)})`);
+  return node;
+}
+
+/** Grow a node's radius to encompass a new build, but don't overlap neighbors. */
+async function growNodeRadius(
+  node: DeclaredNodeWithStats,
+  buildX: number, buildZ: number,
+  allNodes: DeclaredNodeWithStats[]
+): Promise<void> {
+  const distFromCenter = Math.hypot(buildX - node.centerX, buildZ - node.centerZ);
+  const neededRadius = distFromCenter + 10; // 10u padding beyond the build
+  if (neededRadius <= node.radius) return; // already big enough
+
+  // Cap radius so we don't overlap neighbors (maintain NODE_GAP_MIN gap)
+  let maxRadius = neededRadius;
+  for (const other of allNodes) {
+    if (other.id === node.id) continue;
+    const interNodeDist = Math.hypot(other.centerX - node.centerX, other.centerZ - node.centerZ);
+    const maxBeforeOverlap = interNodeDist - other.radius - NODE_GAP_MIN;
+    maxRadius = Math.min(maxRadius, maxBeforeOverlap);
+  }
+
+  const newRadius = Math.max(node.radius, Math.min(neededRadius, maxRadius));
+  if (newRadius > node.radius) {
+    node.radius = Math.round(newRadius);
+    await db.updateWorldNode(node.id, { radius: Math.round(newRadius) }).catch(() => {});
+  }
+}
+
+/** Convert declared node to SettlementNodeSummary for backward-compatible usage. */
+function declaredToSettlementNode(n: DeclaredNodeWithStats): SettlementNodeSummary {
+  return {
+    id: n.id,
+    name: n.name,
+    tier: n.tier as NodeTier,
+    center: { x: n.centerX, z: n.centerZ },
+    radius: n.radius,
+    structureCount: n.structureCount,
+    primitiveCount: n.primitiveCount,
+    footprintArea: n.footprintArea,
+    dominantCategory: n.dominantCategory,
+    missingCategories: n.missingCategories,
+    builders: n.builders,
+    connections: n.connections,
+  };
+}
+
+// Track whether migration has run this boot
+let declaredNodesMigrationDone = false;
+
 function classifyOpenAreaType(
   nearestPrimitiveDist: number,
   maxNodeDistance: number
@@ -1180,23 +1437,49 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           error: `Too far from any existing build (${distToSettlement.toFixed(0)} units). Build within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units of existing structures to grow the settlement organically. Use GET /v1/grid/spatial-summary to find active neighborhoods.`
         });
       }
-      if (distToSettlement >= BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE) {
-        const gate = getExpansionGateViolation(
-          body.position.x,
-          body.position.z,
-          allPrimitives as unknown as PrimitiveLike[],
-        );
-        if (gate.blocked) {
-          return reply.status(409).send({
-            error: `Expansion gate active: nearest node "${gate.nearestNodeName || 'unknown'}" has ${gate.nearestNodeCount || 0}/${NODE_EXPANSION_GATE} structures needed to unlock frontier expansion.`,
-            nextActions: [
-              `Build CLOSER to "${gate.nearestNodeName || 'the node'}" center (within ${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE}u) to densify it.`,
-              'Use GET /v1/grid/build-context to find growth-type safe spots near the node.',
-              'SCAVENGE for materials + credits if low on resources.',
-            ],
-          });
-        }
+    }
+
+    // --- Declared Node Enforcement ---
+    // Builds must be inside a declared node OR far enough away to found a new one.
+    // The gap between nodes is connector-only (roads/bridges exempt via shape check).
+    const allPrimsTyped = allPrimitives as unknown as PrimitiveLike[];
+    const connPrims = allPrimsTyped.filter(isConnectorPrimitive);
+    const structs = buildStructureSummaries(allPrimsTyped);
+
+    // Run migration if needed (seeds declared nodes from legacy clusters on first boot)
+    if (!declaredNodesMigrationDone) {
+      await seedDeclaredNodesFromLegacy(structs, connPrims);
+      declaredNodesMigrationDone = true;
+    }
+
+    const declaredNodes = await getDeclaredNodesWithStats(structs, connPrims);
+    const isConnectorShape = isConnectorPrimitive({ shape: body.shape, position: body.position, scale: body.scale });
+
+    if (declaredNodes.length > 0 && !isConnectorShape) {
+      const { node: nearestNode, distToEdge } = findNearestDeclaredNode(body.position.x, body.position.z, declaredNodes);
+
+      if (nearestNode && distToEdge <= 0) {
+        // Inside a node boundary — allowed, grow radius if needed
+        await growNodeRadius(nearestNode, body.position.x, body.position.z, declaredNodes);
+      } else if (distToEdge >= NODE_GAP_MIN) {
+        // Far enough from all nodes — auto-found a new node
+        await autoFoundNode(body.position.x, body.position.z, agentId, declaredNodes);
+      } else {
+        // In the gap zone — rejected
+        return reply.status(409).send({
+          error: `Build location is in the gap between nodes (${Math.round(distToEdge)}u from nearest node edge "${nearestNode?.name || 'unknown'}"). Build inside a node boundary or ${NODE_GAP_MIN}+ units from any node to found a new settlement.`,
+          nextActions: [
+            nearestNode ? `MOVE to node "${nearestNode.name}" center at (${Math.round(nearestNode.centerX)}, ${Math.round(nearestNode.centerZ)}) and build there.` : 'MOVE to an existing node.',
+            `Or MOVE ${NODE_GAP_MIN}+ units from any node edge to found a new settlement.`,
+            'Roads and bridges are exempt from this restriction — use connector blueprints to link nodes.',
+          ],
+        });
       }
+    } else if (declaredNodes.length === 0 && allPrimitives.length >= BUILD_CREDIT_CONFIG.SETTLEMENT_PROXIMITY_THRESHOLD) {
+      // No declared nodes exist yet but we have structures — run migration
+      await seedDeclaredNodesFromLegacy(structs, connPrims);
+      // Auto-found a node at this build site
+      await autoFoundNode(body.position.x, body.position.z, agentId, []);
     }
 
     // Validate build position (no floating shapes) — use in-memory cache, not DB
@@ -1373,21 +1656,26 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Compute settlement nodes for use in both tier-gate and expansion-gate checks
+    // --- Declared Node Checks for Blueprint ---
     const existingWorldPrims = world.getWorldPrimitives();
     const allPrimsTyped = existingWorldPrims as unknown as PrimitiveLike[];
     const connForGates = allPrimsTyped.filter(isConnectorPrimitive);
     const structsForGates = buildStructureSummaries(allPrimsTyped);
-    const nodesForGates = buildSettlementNodes(structsForGates, connForGates);
-    let bestNode: SettlementNodeSummary | null = null;
-    let bestDist = Infinity;
-    for (const n of nodesForGates) {
-      const d = Math.hypot(n.center.x - body.anchorX, n.center.z - body.anchorZ);
-      if (d < bestDist) { bestDist = d; bestNode = n; }
+
+    // Run migration if needed
+    if (!declaredNodesMigrationDone) {
+      await seedDeclaredNodesFromLegacy(structsForGates, connForGates);
+      declaredNodesMigrationDone = true;
     }
-    const isFoundingAnchor = !bestNode || bestDist > BUILD_CREDIT_CONFIG.ANCHOR_FOUNDING_RADIUS;
+
+    const declaredNodes = await getDeclaredNodesWithStats(structsForGates, connForGates);
+    const { node: bestDeclaredNode, distToCenter: bestDist, distToEdge } =
+      findNearestDeclaredNode(body.anchorX, body.anchorZ, declaredNodes);
+    const isFoundingAnchor = !bestDeclaredNode || distToEdge >= NODE_GAP_MIN;
+
     const bpTags: string[] = Array.isArray(blueprint.tags) ? blueprint.tags.map((t: any) => String(t).toLowerCase()) : [];
     const isMegaBlueprint = bpTags.includes('mega');
+    const isConnectorBlueprint = bpTags.includes('connector') || bpTags.includes('road') || bpTags.includes('bridge');
     const isTier3Blueprint =
       (typeof blueprint.minNodeTier === 'string' && TIER3_NODE_TIERS.has(blueprint.minNodeTier as NodeTier)) ||
       String(blueprint.difficulty || '').toLowerCase() === 'hard' ||
@@ -1407,22 +1695,16 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Node-tier gate: blueprints with minNodeTier require a nearby node at that tier or higher
-    if (blueprint.minNodeTier) {
+    // Node-tier gate: blueprints with minNodeTier require a nearby declared node at that tier
+    if (blueprint.minNodeTier && bestDeclaredNode) {
       const requiredRank = tierRank(blueprint.minNodeTier as NodeTier);
-      // Founding anchor exemption: if the blueprint anchor is far from any existing
-      // node, this is a "founding build" — the agent is starting a brand-new district
-      // with a mega blueprint as the centerpiece. Skip the tier gate.
-      if (!isFoundingAnchor && tierRank(bestNode!.tier) < requiredRank) {
-        const nodeName = bestNode?.name ?? 'none nearby';
-        const nodeTier = bestNode?.tier ?? 'none';
+      if (!isFoundingAnchor && tierRank(bestDeclaredNode.tier as NodeTier) < requiredRank) {
         return reply.code(403).send({
-          error: `This blueprint requires a nearby ${blueprint.minNodeTier} or higher. Nearest node "${nodeName}" is ${nodeTier}. Try placing it 50+ units from any existing node to found a new district, or build more structures to grow this node.`,
+          error: `This blueprint requires a nearby ${blueprint.minNodeTier} or higher. Nearest node "${bestDeclaredNode.name}" is ${bestDeclaredNode.tier}. Build more structures to grow this node, or found a new one ${NODE_GAP_MIN}+ units from any node edge.`,
           nextActions: [
-            `Build more structures near "${nodeName}" to grow it to ${blueprint.minNodeTier} tier.`,
-            `Or place this blueprint 50+ units from any existing node to found a new district.`,
-            'Use GET /v1/grid/build-context to find growth-type safe spots near the node.',
-            'Try a simpler blueprint that does not require a high-tier node.',
+            `Build more structures near "${bestDeclaredNode.name}" to grow it.`,
+            `Or place this blueprint ${NODE_GAP_MIN}+ units from any node edge to found a new settlement.`,
+            'Use GET /v1/grid/build-context to find safe build spots.',
           ],
         });
       }
@@ -1451,7 +1733,7 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Enforce settlement proximity — blueprint anchor must be near existing structures
+    // Enforce settlement proximity
     if (existingWorldPrims.length >= BUILD_CREDIT_CONFIG.SETTLEMENT_PROXIMITY_THRESHOLD) {
       const distToSettlement = distanceToNearestPrimitive(body.anchorX, body.anchorZ, existingWorldPrims);
       if (distToSettlement > BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT) {
@@ -1459,32 +1741,34 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
           error: `Blueprint anchor too far from any existing build (${distToSettlement.toFixed(0)} units). Place within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units of existing structures.`,
           nextActions: [
             'Use GET /v1/grid/build-context to find safe spots near existing structures.',
-            'Use GET /v1/grid/spatial-summary to find active neighborhoods.',
-            `MOVE closer to an existing settlement — anchor must be within ${BUILD_CREDIT_CONFIG.MAX_BUILD_DISTANCE_FROM_SETTLEMENT} units.`,
+            `MOVE closer to an existing settlement.`,
           ],
         });
       }
-      if (distToSettlement >= BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE) {
-        // Mega founding exemption: mega blueprints at founding anchors skip the expansion gate
-        const skipExpansionGate = isMegaBlueprint && isFoundingAnchor;
-        if (!skipExpansionGate) {
-          const gate = getExpansionGateViolation(
-            body.anchorX,
-            body.anchorZ,
-            allPrimsTyped,
-          );
-          if (gate.blocked) {
-            return reply.code(409).send({
-              error: `Expansion gate active: nearest node "${gate.nearestNodeName || 'unknown'}" has ${gate.nearestNodeCount || 0}/${NODE_EXPANSION_GATE} structures needed to unlock frontier expansion.`,
-              nextActions: [
-                `Build CLOSER to "${gate.nearestNodeName || 'the node'}" center (within ${BUILD_CREDIT_CONFIG.FRONTIER_EXPANSION_MIN_DISTANCE}u) to densify it.`,
-                'Use GET /v1/grid/build-context to find growth-type safe spots near the node.',
-                'SCAVENGE for materials + credits if low on resources.',
-              ],
-            });
-          }
-        }
+    }
+
+    // --- Declared Node Boundary Enforcement for Blueprint ---
+    if (declaredNodes.length > 0 && !isConnectorBlueprint) {
+      if (bestDeclaredNode && distToEdge <= 0) {
+        // Inside a node — allowed, grow radius
+        await growNodeRadius(bestDeclaredNode, body.anchorX, body.anchorZ, declaredNodes);
+      } else if (distToEdge >= NODE_GAP_MIN) {
+        // Far enough — auto-found a new node
+        await autoFoundNode(body.anchorX, body.anchorZ, agentId, declaredNodes);
+      } else {
+        // In the gap — rejected (unless connector)
+        return reply.code(409).send({
+          error: `Blueprint anchor is in the gap between nodes (${Math.round(distToEdge)}u from "${bestDeclaredNode?.name || 'unknown'}" edge). Build inside a node or ${NODE_GAP_MIN}+ units from any node edge to found a new settlement.`,
+          nextActions: [
+            bestDeclaredNode ? `MOVE to "${bestDeclaredNode.name}" center at (${Math.round(bestDeclaredNode.centerX)}, ${Math.round(bestDeclaredNode.centerZ)}).` : 'MOVE to an existing node.',
+            `Or MOVE ${NODE_GAP_MIN}+ units from any node to found a new settlement.`,
+            'Connector blueprints (roads, bridges) ARE allowed in the gap.',
+          ],
+        });
       }
+    } else if (declaredNodes.length === 0 && existingWorldPrims.length >= BUILD_CREDIT_CONFIG.SETTLEMENT_PROXIMITY_THRESHOLD) {
+      await seedDeclaredNodesFromLegacy(structsForGates, connForGates);
+      await autoFoundNode(body.anchorX, body.anchorZ, agentId, []);
     }
 
     // Check resource costs for this blueprint
@@ -1615,7 +1899,6 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
 
     // Connector bypass: agents with an active CONNECTOR_BYPASS bounty grant can
     // place connector/road blueprints through existing geometry and reservations.
-    const isConnectorBlueprint = bpTags.includes('connector') || bpTags.includes('road');
     const hasConnectorBypass = isConnectorBlueprint && agentHasGrantedTool(agentId, 'CONNECTOR_BYPASS');
     if (hasConnectorBypass) {
       console.log(`[Grid] Connector bypass: ${agentId} placing ${body.name}`);
@@ -3106,7 +3389,14 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const primitives = world.getWorldPrimitives() as unknown as PrimitiveLike[];
     const connectorPrimitives = primitives.filter(isConnectorPrimitive);
     const structures = buildStructureSummaries(primitives);
-    const nodes = buildSettlementNodes(structures, connectorPrimitives);
+
+    // Use declared nodes
+    if (!declaredNodesMigrationDone) {
+      await seedDeclaredNodesFromLegacy(structures, connectorPrimitives);
+      declaredNodesMigrationDone = true;
+    }
+    const declaredNodesRaw = await getDeclaredNodesWithStats(structures, connectorPrimitives);
+    const nodes = declaredNodesRaw.map(declaredToSettlementNode);
     const [guilds, directives] = await Promise.all([
       db.getAllGuilds(),
       db.getActiveDirectives(),
@@ -3237,7 +3527,14 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const primitiveInput = primitives as unknown as PrimitiveLike[];
     const connectorPrimitives = primitiveInput.filter(isConnectorPrimitive);
     const structures = buildStructureSummaries(primitiveInput);
-    const nodes = buildSettlementNodes(structures, connectorPrimitives);
+
+    // Use declared nodes as source of truth
+    if (!declaredNodesMigrationDone) {
+      await seedDeclaredNodesFromLegacy(structures, connectorPrimitives);
+      declaredNodesMigrationDone = true;
+    }
+    const declaredNodes = await getDeclaredNodesWithStats(structures, connectorPrimitives);
+    const nodes = declaredNodes.map(declaredToSettlementNode);
     const openAreas = computeOpenAreas(nodes, primitiveInput);
 
     // Find nearest node to queried position
@@ -3559,17 +3856,26 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const primitiveInput = primitives as unknown as PrimitiveLike[];
     const connectorPrimitives = primitiveInput.filter(isConnectorPrimitive);
     const structures = buildStructureSummaries(primitiveInput);
-    const settlementNodes = buildSettlementNodes(structures, connectorPrimitives);
+
+    // Run migration if needed
+    if (!declaredNodesMigrationDone) {
+      await seedDeclaredNodesFromLegacy(structures, connectorPrimitives);
+      declaredNodesMigrationDone = true;
+    }
+
+    const declaredNodes = await getDeclaredNodesWithStats(structures, connectorPrimitives);
 
     const result = {
-      nodes: settlementNodes.map(n => ({
+      nodes: declaredNodes.map(n => ({
         id: n.id,
         name: n.name,
         tier: n.tier,
-        center: { x: Math.round(n.center.x * 10) / 10, z: Math.round(n.center.z * 10) / 10 },
+        center: { x: Math.round(n.centerX * 10) / 10, z: Math.round(n.centerZ * 10) / 10 },
         radius: Math.round(n.radius * 10) / 10,
         structureCount: n.structureCount,
         primitiveCount: n.primitiveCount,
+        founderAgentId: n.founderAgentId,
+        status: n.status,
       })),
     };
 
@@ -3604,7 +3910,14 @@ export async function registerGridRoutes(fastify: FastifyInstance) {
     const primitiveInput = primitives as unknown as PrimitiveLike[];
     const connectorPrimitives = primitiveInput.filter(isConnectorPrimitive);
     const structures = buildStructureSummaries(primitiveInput);
-    const settlementNodes = buildSettlementNodes(structures, connectorPrimitives);
+
+    // Use declared nodes
+    if (!declaredNodesMigrationDone) {
+      await seedDeclaredNodesFromLegacy(structures, connectorPrimitives);
+      declaredNodesMigrationDone = true;
+    }
+    const declaredNodesRaw = await getDeclaredNodesWithStats(structures, connectorPrimitives);
+    const settlementNodes = declaredNodesRaw.map(declaredToSettlementNode);
 
     const CELL_SIZE = 10;
 

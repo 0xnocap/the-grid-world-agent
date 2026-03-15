@@ -14,6 +14,9 @@ import type {
   MaterialType,
   MaterialCost,
   MaterialInventory,
+  WorldNode,
+  DeclaredNodeTier,
+  DeclaredNodeStatus,
 } from './types.js';
 import { CLASS_BONUSES, AGENT_CLASSES, MATERIAL_CONFIG, MATERIAL_TYPES } from './types.js';
 
@@ -807,6 +810,22 @@ export async function initDatabase(): Promise<void> {
       );
     `);
 
+    // Declared world nodes (persistent settlement epicenters)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS world_nodes (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        center_x FLOAT NOT NULL,
+        center_z FLOAT NOT NULL,
+        radius FLOAT NOT NULL DEFAULT 30,
+        founder_agent_id VARCHAR(255) NOT NULL,
+        tier VARCHAR(50) NOT NULL DEFAULT 'settlement-node',
+        status VARCHAR(50) NOT NULL DEFAULT 'active',
+        created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT,
+        updated_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT
+      );
+    `);
+
     // Agent notifications (server-managed, agents must acknowledge)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS agent_notifications (
@@ -844,6 +863,9 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_work_orders_issuer ON work_orders(issuer_id);
       CREATE INDEX IF NOT EXISTS idx_work_orders_claimer ON work_orders(claimer_id);
       CREATE INDEX IF NOT EXISTS idx_notifications_agent ON agent_notifications(agent_id, acknowledged_at);
+      CREATE INDEX IF NOT EXISTS idx_world_nodes_center ON world_nodes(center_x, center_z);
+      CREATE INDEX IF NOT EXISTS idx_world_nodes_founder ON world_nodes(founder_agent_id);
+      CREATE INDEX IF NOT EXISTS idx_world_nodes_status ON world_nodes(status);
     `);
 
     // Unique case-insensitive agent name constraint
@@ -4151,6 +4173,88 @@ export async function hasNotification(agentId: string, type: string, dedupKey: s
     [agentId, `${type}:${dedupKey}`]
   );
   return (result.rows?.length ?? 0) > 0;
+}
+
+// --- World Nodes CRUD ---
+
+function rowToWorldNode(row: any): WorldNode {
+  return {
+    id: row.id,
+    name: row.name,
+    centerX: row.center_x,
+    centerZ: row.center_z,
+    radius: row.radius,
+    founderAgentId: row.founder_agent_id,
+    tier: row.tier as DeclaredNodeTier,
+    status: row.status as DeclaredNodeStatus,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+export async function getAllWorldNodes(): Promise<WorldNode[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    "SELECT * FROM world_nodes WHERE status = 'active' ORDER BY created_at ASC"
+  );
+  return result.rows.map(rowToWorldNode);
+}
+
+export async function getWorldNodeById(id: string): Promise<WorldNode | null> {
+  if (!pool) return null;
+  const result = await pool.query('SELECT * FROM world_nodes WHERE id = $1', [id]);
+  return result.rows.length > 0 ? rowToWorldNode(result.rows[0]) : null;
+}
+
+export async function createWorldNode(node: {
+  id: string;
+  name: string;
+  centerX: number;
+  centerZ: number;
+  radius: number;
+  founderAgentId: string;
+  tier?: DeclaredNodeTier;
+}): Promise<WorldNode> {
+  if (!pool) throw new Error('Database not available');
+  const now = Date.now();
+  const result = await pool.query(
+    `INSERT INTO world_nodes (id, name, center_x, center_z, radius, founder_agent_id, tier, status, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $8)
+     RETURNING *`,
+    [node.id, node.name, node.centerX, node.centerZ, node.radius, node.founderAgentId, node.tier || 'settlement-node', now]
+  );
+  return rowToWorldNode(result.rows[0]);
+}
+
+export async function updateWorldNode(id: string, updates: {
+  name?: string;
+  radius?: number;
+  tier?: DeclaredNodeTier;
+  status?: DeclaredNodeStatus;
+}): Promise<WorldNode | null> {
+  if (!pool) return null;
+  const sets: string[] = [];
+  const vals: any[] = [];
+  let idx = 1;
+  if (updates.name !== undefined) { sets.push(`name = $${idx++}`); vals.push(updates.name); }
+  if (updates.radius !== undefined) { sets.push(`radius = $${idx++}`); vals.push(updates.radius); }
+  if (updates.tier !== undefined) { sets.push(`tier = $${idx++}`); vals.push(updates.tier); }
+  if (updates.status !== undefined) { sets.push(`status = $${idx++}`); vals.push(updates.status); }
+  if (sets.length === 0) return getWorldNodeById(id);
+  sets.push(`updated_at = $${idx++}`);
+  vals.push(Date.now());
+  vals.push(id);
+  const result = await pool.query(
+    `UPDATE world_nodes SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+    vals
+  );
+  return result.rows.length > 0 ? rowToWorldNode(result.rows[0]) : null;
+}
+
+export async function getWorldNodeCount(): Promise<number> {
+  if (!pool) return 0;
+  const result = await pool.query("SELECT COUNT(*) FROM world_nodes WHERE status = 'active'");
+  return parseInt(result.rows[0].count, 10);
 }
 
 export async function closeDatabase(): Promise<void> {

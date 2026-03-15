@@ -247,6 +247,53 @@ export const CLASS_BONUSES = {
   researcher: { creditMultiplier: 1.1, analyticsAccess: true, description: '+10% credits, analytics access (requires DATA_ATTESTATION cert)' },
 } as const;
 
+// --- Declared Nodes ---
+// Persistent settlement nodes with fixed centers. Agents found nodes by building
+// far enough from existing ones. Tier auto-computes from structure count.
+
+export type DeclaredNodeTier =
+  | 'settlement-node'
+  | 'server-node'
+  | 'forest-node'
+  | 'city-node'
+  | 'metropolis-node'
+  | 'megaopolis-node';
+
+export type DeclaredNodeStatus = 'active' | 'abandoned';
+
+export interface WorldNode {
+  id: string;
+  name: string;
+  centerX: number;
+  centerZ: number;
+  radius: number;
+  founderAgentId: string;
+  tier: DeclaredNodeTier;
+  status: DeclaredNodeStatus;
+  createdAt: number;   // epoch ms
+  updatedAt: number;   // epoch ms
+}
+
+/** Min gap between any two node edges. Builds in this gap are rejected (connector-only). */
+export const NODE_GAP_MIN = 40;
+
+/** Structure count thresholds for tier auto-computation. */
+export const NODE_TIER_THRESHOLDS: Array<{ min: number; tier: DeclaredNodeTier }> = [
+  { min: 50, tier: 'megaopolis-node' },
+  { min: 30, tier: 'metropolis-node' },
+  { min: 15, tier: 'city-node' },
+  { min: 8,  tier: 'forest-node' },
+  { min: 4,  tier: 'server-node' },
+  { min: 0,  tier: 'settlement-node' },
+];
+
+export function computeNodeTier(structureCount: number): DeclaredNodeTier {
+  for (const t of NODE_TIER_THRESHOLDS) {
+    if (structureCount >= t.min) return t.tier;
+  }
+  return 'settlement-node';
+}
+
 // Blueprint Build Plan — server-side state for multi-tick blueprint execution.
 // The server pre-computes all absolute coordinates at plan creation time.
 // Agents drive progress by calling BUILD_CONTINUE each tick.
